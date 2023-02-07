@@ -25,13 +25,17 @@ import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.time.DateUtils;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileStatus;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.nutch.crawl.*;
 import org.apache.nutch.fetcher.Fetcher;
 import org.apache.nutch.hostdb.UpdateHostDb;
 import org.apache.nutch.indexer.IndexingJob;
 import org.apache.nutch.parse.ParseSegment;
+import org.apache.nutch.scoring.webgraph.WebGraph;
 import org.apache.nutch.tools.FileDumper;
+import org.apache.nutch.util.HadoopFSUtil;
 import org.apache.nutch.util.NutchConfiguration;
 import org.apache.nutch.util.SitemapProcessor;
 import org.apache.solr.client.solrj.SolrClient;
@@ -141,6 +145,8 @@ public class Crawler {
     private Path segmentsDir;
     private Path linkdb;
     private Path hostdb;
+
+    private Path webGraphDb;
     private int currentRound = 0;
 
     private enum SitemapFromHostDb{
@@ -229,6 +235,8 @@ public class Crawler {
             }
 
             currentRound--;
+
+            webgraph();
 
             // if a recrawl delete existing solr records and index all segments from the recrawl
             if (jobInfo.isRecrawl() || jobInfo.getJobType() == JobType.RECRAWL) {
@@ -1007,6 +1015,75 @@ public class Crawler {
         }
     }
 
+    private void webgraph() throws OSSearchException {
+
+        CrawlStepLog crawlStepLog = createCrawlStepLog(WEBGRAPH, RUNNING);
+
+        if (!stopFlag.get()) {
+            try {
+
+                Configuration webgraphConf = new Configuration(conf);
+                webgraphConf.set("nutch.conf.uuid", UUID.randomUUID().toString());
+
+                webgraphConf.setBoolean("db.ignore.external.links", false);
+                webgraphConf.setBoolean("db.ignore.internal.links", false);
+
+                webgraphConf.setBoolean("link.ignore.internal.host", false);
+                webgraphConf.setBoolean("link.ignore.internal.domain", false);
+
+                webgraphConf.setBoolean("link.ignore.limit.page", false);
+                webgraphConf.setBoolean("link.ignore.limit.domain", false);
+
+                Map<String, String> webgraphArgs = jobInfo.getNutchStepArgs().getWebgraph();
+
+                boolean filter = Boolean.parseBoolean(webgraphArgs.getOrDefault("filter", "false"));
+                boolean normalize = Boolean.parseBoolean(webgraphArgs.getOrDefault("normalize", "false"));
+
+                //Path[] segPaths = Files.list(Paths.get(segmentsDir.toString())).map(p -> new Path(p.toString())).toArray(Path[]::new);
+
+                FileSystem fs = segmentsDir.getFileSystem(webgraphConf);
+                FileStatus[] fstats = fs.listStatus(segmentsDir, HadoopFSUtil.getPassDirectoriesFilter(fs));
+                Path[] segPaths = HadoopFSUtil.getPaths(fstats);
+
+                StringJoiner sj = new StringJoiner(", ");
+                sj.add("webgraphDb: " + webGraphDb);
+                sj.add("segments: " + Arrays.asList(segPaths));
+                sj.add("filter: " + filter);
+                sj.add("normalize: " + normalize);
+                sj.add("db.ignore.external.links: " + webgraphConf.getBoolean("db.ignore.external.links", false));
+                sj.add("db.ignore.internal.links: " + webgraphConf.getBoolean("db.ignore.internal.links", false));
+                sj.add("link.ignore.internal.host: " + webgraphConf.getBoolean("link.ignore.internal.host", false));
+                sj.add("link.ignore.internal.domain: " + webgraphConf.getBoolean("link.ignore.internal.domain", false));
+                sj.add("link.ignore.limit.page: " + webgraphConf.getBoolean("link.ignore.limit.page", false));
+                sj.add("link.ignore.limit.domain: " + webgraphConf.getBoolean("link.ignore.limit.domain", false));
+
+                crawlStepLog.setArgs(sj.toString());
+                crawlStepLogRepository.saveAndFlush(crawlStepLog);
+
+                if (filter || webgraphConf.getBoolean(WebGraph.OutlinkDb.URL_FILTERING, false)) {
+                    webgraphConf.set(URLFILTER_REGEX_RULES, indexUrlFilterRules);
+                }
+
+                WebGraph webGraph = new WebGraph();
+                webGraph.setConf(webgraphConf);
+
+                webGraph.createWebGraph(webGraphDb, segPaths, normalize, filter);
+
+                crawlStepLog.setState(FINISHED);
+                crawlStepLogRepository.saveAndFlush(crawlStepLog);
+
+            } catch (Exception e) {
+                log.error(e.getMessage(), e);
+                updateCrawlStepLogError(crawlStepLog, e.getMessage());
+                throw new OSSearchException(e);
+            }
+        } else {
+            log.info("STOPPING {}", WEBGRAPH);
+            updateCrawlStepLogStopped(crawlStepLog);
+        }
+
+    }
+
     public void reindex() throws OSSearchException {
         CrawlStepLog crawlStepLog = createCrawlStepLog(REINDEX, RUNNING);
 
@@ -1454,6 +1531,9 @@ public class Crawler {
 
             // the hostdb directory
             hostdb = new Path(dbDir, "hostdb");
+
+            // the webgraph directory
+            webGraphDb = new Path(dbDir, "webgraph");
         } catch (Exception e) {
             throw new OSSearchException(e);
         }

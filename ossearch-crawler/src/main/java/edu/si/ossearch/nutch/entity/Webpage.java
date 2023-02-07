@@ -56,6 +56,10 @@ public class Webpage implements Serializable {
 ////    @Column(name = "nutch_property")
 //    private Map<String, Object> metadata = new HashMap<>();
 
+    @OneToOne(cascade = CascadeType.ALL, orphanRemoval = true)
+    @JoinColumn(name = "links_id")
+    private Links links;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "crawl_db_id")
     private CrawlDb crawlDb;

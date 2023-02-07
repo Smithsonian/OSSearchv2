@@ -88,6 +88,13 @@ public class NutchStepArgs implements Serializable {
     @Column(name = "_index")
     private Map<String, String> index = new HashMap<>();
 
+    @ElementCollection(fetch = FetchType.EAGER)
+    @CollectionTable(name = "step_args_webgraph_mapping",
+            joinColumns = {@JoinColumn(name = "step_args_id", referencedColumnName = "id")})
+    @MapKeyColumn(name = "webgraph_option_name")
+    @Column(name = "_webgraph")
+    private Map<String, String> webgraph = new HashMap<>();
+
     @CreationTimestamp
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private Date createdDate;

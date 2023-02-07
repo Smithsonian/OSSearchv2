@@ -630,7 +630,14 @@ export default {
             {name: "addBinaryContent", type: "checkbox", desc:"index raw/binary content in field `binaryContent`", default: false},
             {name: "base64", type: "checkbox", desc:"use Base64 encoding for binary content", default: false},
           ]
-    }
+        },
+        webgraph: {
+          desc: "Creates three databases, one for inlinks, one for outlinks, and a node database that holds the number of in and outlinks to a url and the current score for the url. The score is set by an analysis program such as LinkRank. The WebGraph is an update-able database. Outlinks are stored by their fetch time or by the current system time if no fetch time is available. Only the most recent version of outlinks for a given url is stored. As more crawls are executed and the WebGraph updated, newer Outlinks will replace older Outlinks. This allows the WebGraph to adapt to changes in the link structure of the web. The Inlink database is created from the Outlink database and is regenerated when the WebGraph is updated. The Node database is created from both the Inlink and Outlink databases. Because the Node database is overwritten when the WebGraph is updated and because the Node database holds current scores for urls it is recommended that a crawl-cycle (one or more full crawls) fully complete before the WebGraph is updated and some type of analysis, such as LinkRank, is run to update scores in the Node database in a stable fashion.",
+          args: [
+            {name: "filter", type: "checkbox", desc:"skip documents with URL rejected by configured URL filters", default: false},
+            {name: "normalize", type: "checkbox", desc:"normalize URLs before indexing"},
+          ]
+        }
   },
       isChecked: {},
       isEditBasicInfo: true,
