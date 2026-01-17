@@ -123,14 +123,17 @@ public class SD603ReportServiceImpl implements SD603ReportService {
         for (Long collectionId : request.getCollectionIds()) {
             Map<String, List<UrlResult>> termResults = resultsByCollection.get(collectionId);
 
+            // Only include terms that have results (filter out empty matches)
             List<TermMatch> matches = new ArrayList<>();
             for (String term : request.getSearchTerms()) {
                 List<UrlResult> urls = termResults.getOrDefault(term, new ArrayList<>());
-                matches.add(TermMatch.builder()
-                        .searchTerm(term)
-                        .count(urls.size())
-                        .urls(urls)
-                        .build());
+                if (!urls.isEmpty()) {
+                    matches.add(TermMatch.builder()
+                            .searchTerm(term)
+                            .count(urls.size())
+                            .urls(urls)
+                            .build());
+                }
             }
 
             collectionResults.add(CollectionResult.builder()
@@ -140,10 +143,12 @@ public class SD603ReportServiceImpl implements SD603ReportService {
                     .build());
         }
 
+        // Only include terms that have results in the summary
         List<TermSummary> summaries = request.getSearchTerms().stream()
+                .filter(term -> termTotalCounts.getOrDefault(term, 0) > 0)
                 .map(term -> TermSummary.builder()
                         .term(term)
-                        .totalCount(termTotalCounts.getOrDefault(term, 0))
+                        .totalCount(termTotalCounts.get(term))
                         .build())
                 .collect(Collectors.toList());
 
