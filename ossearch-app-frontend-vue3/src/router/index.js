@@ -38,6 +38,7 @@ import CollectionCrawlingUrlNormalizerPatterns from "../views/collections/collec
 import CollectionSearchEdanFieldMappingConfig from "../views/collections/collection/search/CollectionSearchEdanFieldMappingConfig.vue";
 import BackupRestore from "../views/BackupRestore.vue";
 import Reindex from "../views/Reindex.vue";
+import SD603Report from "../views/reports/SD603Report.vue";
 
 import Tutorial from '../views/tutorial/Tutorial';
 import TutorialCreateCollection from '../views/tutorial/collection/TutorialCreateCollection.vue';
@@ -363,6 +364,12 @@ const routes = [
     name: 'reindex',
     component: Reindex,
     props: true
+  },
+  {
+    path: '/sd603-report',
+    name: 'sd603Report',
+    component: SD603Report,
+    beforeEnter: isAdmin
   },
   {
     path: '/about',

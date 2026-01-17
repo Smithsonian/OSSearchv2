@@ -58,6 +58,10 @@
             <i class="fas fa-history me-2"></i>
             Reindex
           </router-link>
+          <router-link class="nav-link" to="/sd603-report">
+            <i class="fas fa-file-alt me-2"></i>
+            SD603 Report
+          </router-link>
         </template>
 
         <router-link class="nav-link" to="/about">
