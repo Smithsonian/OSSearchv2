@@ -105,6 +105,11 @@ public class SD603ReportResponse {
          * The title of the matching page.
          */
         private String title;
+
+        /**
+         * The anchor text(s) of links to this page (comma-separated if multiple).
+         */
+        private String anchor;
     }
 
     /**

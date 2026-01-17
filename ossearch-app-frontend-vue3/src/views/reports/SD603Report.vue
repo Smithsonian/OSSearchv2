@@ -144,52 +144,82 @@
         <div class="accordion" id="resultsAccordion">
           <div
             class="accordion-item"
-            v-for="(collection, idx) in reportData.byCollection"
+            v-for="(collection, collIdx) in reportData.byCollection"
             :key="collection.collectionId"
           >
-            <h2 class="accordion-header" :id="'heading' + idx">
+            <h2 class="accordion-header" :id="'collectionHeading' + collIdx">
               <button
                 class="accordion-button"
-                :class="{ collapsed: idx > 0 }"
+                :class="{ collapsed: collIdx > 0 }"
                 type="button"
                 data-bs-toggle="collapse"
-                :data-bs-target="'#collapse' + idx"
-                :aria-expanded="idx === 0"
-                :aria-controls="'collapse' + idx"
+                :data-bs-target="'#collectionCollapse' + collIdx"
+                :aria-expanded="collIdx === 0"
+                :aria-controls="'collectionCollapse' + collIdx"
               >
                 {{ collection.collectionName }}
                 <span class="badge bg-secondary ms-2">{{ getTotalUrls(collection) }} URLs</span>
               </button>
             </h2>
             <div
-              :id="'collapse' + idx"
+              :id="'collectionCollapse' + collIdx"
               class="accordion-collapse collapse"
-              :class="{ show: idx === 0 }"
-              :aria-labelledby="'heading' + idx"
+              :class="{ show: collIdx === 0 }"
+              :aria-labelledby="'collectionHeading' + collIdx"
               data-bs-parent="#resultsAccordion"
             >
-              <div class="accordion-body">
+              <div class="accordion-body p-2">
                 <div v-if="collection.matches.length === 0" class="text-muted">
                   No matches found for this collection.
                 </div>
-                <div v-for="match in collection.matches" :key="match.searchTerm" class="mb-3">
-                  <h6>
-                    <i class="fas fa-search me-1"></i>
-                    "{{ match.searchTerm }}" ({{ match.count }} results)
-                  </h6>
-                  <ul class="list-group list-group-flush">
-                    <li
-                      class="list-group-item"
-                      v-for="url in match.urls"
-                      :key="url.url"
+                <!-- Nested Terms Accordion -->
+                <div class="accordion" :id="'termsAccordion' + collIdx">
+                  <div
+                    class="accordion-item"
+                    v-for="(match, termIdx) in collection.matches"
+                    :key="match.searchTerm"
+                  >
+                    <h2 class="accordion-header" :id="'termHeading' + collIdx + '_' + termIdx">
+                      <button
+                        class="accordion-button collapsed term-accordion-button"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        :data-bs-target="'#termCollapse' + collIdx + '_' + termIdx"
+                        aria-expanded="false"
+                        :aria-controls="'termCollapse' + collIdx + '_' + termIdx"
+                      >
+                        <i class="fas fa-search me-2"></i>
+                        "{{ match.searchTerm }}"
+                        <span class="badge bg-primary ms-2">{{ match.count }} results</span>
+                      </button>
+                    </h2>
+                    <div
+                      :id="'termCollapse' + collIdx + '_' + termIdx"
+                      class="accordion-collapse collapse"
+                      :aria-labelledby="'termHeading' + collIdx + '_' + termIdx"
+                      :data-bs-parent="'#termsAccordion' + collIdx"
                     >
-                      <a :href="url.url" target="_blank" rel="noopener noreferrer">
-                        {{ url.title || url.url }}
-                      </a>
-                      <br />
-                      <small class="text-muted">{{ url.url }}</small>
-                    </li>
-                  </ul>
+                      <div class="accordion-body py-2">
+                        <ul class="list-group list-group-flush">
+                          <li
+                            class="list-group-item"
+                            v-for="url in match.urls"
+                            :key="url.url"
+                          >
+                            <div>
+                              <strong>{{ url.title || url.anchor || 'No title' }}</strong>
+                            </div>
+                            <a :href="url.url" target="_blank" rel="noopener noreferrer" class="text-break">
+                              {{ url.url }}
+                            </a>
+                          </li>
+                        </ul>
+                        <div v-if="match.urls.length === 0" class="text-muted">
+                          No URLs found for this term.
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -361,9 +391,22 @@ export default {
   color: #0c63e4;
 }
 
+// Nested terms accordion styling
+.term-accordion-button {
+  padding: 0.5rem 1rem;
+  font-size: 0.95rem;
+  background-color: #f8f9fa;
+
+  &:not(.collapsed) {
+    background-color: #d1e7dd;
+    color: #0f5132;
+  }
+}
+
 .list-group-item {
   border-left: none;
   border-right: none;
+  padding: 0.5rem 1rem;
 }
 
 .list-group-item:first-child {
@@ -372,5 +415,9 @@ export default {
 
 .list-group-item:last-child {
   border-bottom: none;
+}
+
+.text-break {
+  word-break: break-all;
 }
 </style>

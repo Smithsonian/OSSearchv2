@@ -50,7 +50,8 @@ public class SD603ReportServiceImpl implements SD603ReportService {
     @Autowired
     private CollectionRepository collectionRepository;
 
-    private static final int MAX_ROWS = 10000;
+    // Return all results - use Integer.MAX_VALUE
+    private static final int MAX_ROWS = Integer.MAX_VALUE;
 
     @Override
     public SD603ReportResponse generateReport(SD603ReportRequest request) throws SolrServerException, IOException {
@@ -101,10 +102,12 @@ public class SD603ReportServiceImpl implements SD603ReportService {
 
                     String url = getFieldAsString(doc, "url");
                     String title = getFieldAsString(doc, "title");
+                    String anchor = getMultiValuedFieldAsString(doc, "anchor");
 
                     termResults.get(term).add(UrlResult.builder()
                             .url(url)
                             .title(title)
+                            .anchor(anchor)
                             .build());
 
                     // Update total count for this term
@@ -153,22 +156,23 @@ public class SD603ReportServiceImpl implements SD603ReportService {
     }
 
     @Override
-    public ByteArrayInputStream exportToCsv(SD603ReportResponse report) throws IOException {
+    public ByteArrayInputStream exportToCsv(SD603ReportResponse report) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try (PrintWriter writer = new PrintWriter(out)) {
             // Write CSV header
-            writer.println("Collection ID,Collection Name,Search Term,URL,Title");
+            writer.println("Collection ID,Collection Name,Search Term,URL,Title,Anchor");
 
             // Write data rows
             for (CollectionResult collection : report.getByCollection()) {
                 for (TermMatch match : collection.getMatches()) {
                     for (UrlResult url : match.getUrls()) {
-                        writer.printf("\"%d\",\"%s\",\"%s\",\"%s\",\"%s\"%n",
+                        writer.printf("\"%d\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"%n",
                                 collection.getCollectionId(),
                                 escapeCsvValue(collection.getCollectionName()),
                                 escapeCsvValue(match.getSearchTerm()),
                                 escapeCsvValue(url.getUrl() != null ? url.getUrl() : ""),
-                                escapeCsvValue(url.getTitle() != null ? url.getTitle() : ""));
+                                escapeCsvValue(url.getTitle() != null ? url.getTitle() : ""),
+                                escapeCsvValue(url.getAnchor() != null ? url.getAnchor() : ""));
                     }
                 }
             }
@@ -199,8 +203,8 @@ public class SD603ReportServiceImpl implements SD603ReportService {
         // Add collection filter
         query.addFilterQuery(collectionFilterQuery);
 
-        // Set fields to return
-        query.setFields("url", "title", "collectionID");
+        // Set fields to return (anchor is multivalued)
+        query.setFields("url", "title", "anchor", "collectionID");
 
         // Set maximum rows
         query.setRows(MAX_ROWS);
@@ -253,6 +257,7 @@ public class SD603ReportServiceImpl implements SD603ReportService {
 
     /**
      * Get a field value as a String from a Solr document.
+     * For multi-valued fields, returns only the first value.
      */
     private String getFieldAsString(SolrDocument doc, String fieldName) {
         Object value = doc.getFieldValue(fieldName);
@@ -265,6 +270,26 @@ public class SD603ReportServiceImpl implements SD603ReportService {
                 return values.iterator().next().toString();
             }
             return null;
+        }
+        return value.toString();
+    }
+
+    /**
+     * Get a multi-valued field as a comma-separated String from a Solr document.
+     */
+    private String getMultiValuedFieldAsString(SolrDocument doc, String fieldName) {
+        Object value = doc.getFieldValue(fieldName);
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Collection) {
+            Collection<?> values = (Collection<?>) value;
+            if (values.isEmpty()) {
+                return null;
+            }
+            return values.stream()
+                    .map(Object::toString)
+                    .collect(Collectors.joining(", "));
         }
         return value.toString();
     }

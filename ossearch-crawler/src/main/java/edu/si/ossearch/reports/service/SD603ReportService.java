@@ -31,7 +31,6 @@ public interface SD603ReportService {
      *
      * @param report The report to export
      * @return A ByteArrayInputStream containing the CSV data
-     * @throws IOException if there is an error generating the CSV
      */
-    ByteArrayInputStream exportToCsv(SD603ReportResponse report) throws IOException;
+    ByteArrayInputStream exportToCsv(SD603ReportResponse report);
 }
