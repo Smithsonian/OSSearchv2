@@ -239,10 +239,10 @@
 import Breadcrumb from "../../components/Breadcrumb.vue";
 import DualListBox from "../../components/DualListBox.vue";
 import CollectionService from "../../services/collection.service";
-import SD603ReportService from "../../services/sd603report.service";
+import KeywordsAndPhrasesReportService from "../../services/keywords-and-phrases-report.service";
 
 export default {
-  name: "SD603Report",
+  name: "KeywordsAndPhrasesReport",
   components: {
     Breadcrumb,
     DualListBox,
@@ -332,7 +332,7 @@ export default {
 
       try {
         const collectionIds = this.collectionsSelected.map((c) => c.id);
-        const response = await SD603ReportService.generateReport(
+        const response = await KeywordsAndPhrasesReportService.generateReport(
           collectionIds,
           this.searchTerms
         );
@@ -348,7 +348,7 @@ export default {
       this.exporting = true;
       try {
         const collectionIds = this.collectionsSelected.map((c) => c.id);
-        const response = await SD603ReportService.exportCsv(
+        const response = await KeywordsAndPhrasesReportService.exportCsv(
           collectionIds,
           this.searchTerms
         );
@@ -358,7 +358,7 @@ export default {
         const url = window.URL.createObjectURL(blob);
         const link = document.createElement("a");
         link.href = url;
-        link.download = `SD603_Report_${new Date().toISOString().slice(0, 10)}.csv`;
+        link.download = `Keywords_and_Phrases_Report_${new Date().toISOString().slice(0, 10)}.csv`;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);

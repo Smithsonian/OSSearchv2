@@ -8,7 +8,7 @@ import lombok.NoArgsConstructor;
 import java.util.List;
 
 /**
- * Request DTO for SD603 Report.
+ * Request DTO for Keywords and Phrases Report.
  * Contains the collection IDs to search and the search terms (words/phrases) to find.
  *
  * @author jbirkhimer
@@ -16,7 +16,7 @@ import java.util.List;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-public class SD603ReportRequest {
+public class KeywordsAndPhrasesReportRequest {
 
     /**
      * List of collection IDs to search across.

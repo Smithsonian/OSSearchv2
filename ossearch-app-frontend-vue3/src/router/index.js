@@ -38,7 +38,7 @@ import CollectionCrawlingUrlNormalizerPatterns from "../views/collections/collec
 import CollectionSearchEdanFieldMappingConfig from "../views/collections/collection/search/CollectionSearchEdanFieldMappingConfig.vue";
 import BackupRestore from "../views/BackupRestore.vue";
 import Reindex from "../views/Reindex.vue";
-import SD603Report from "../views/reports/SD603Report.vue";
+import KeywordsAndPhrasesReport from "../views/reports/KeywordsAndPhrasesReport.vue";
 
 import Tutorial from '../views/tutorial/Tutorial';
 import TutorialCreateCollection from '../views/tutorial/collection/TutorialCreateCollection.vue';
@@ -366,9 +366,9 @@ const routes = [
     props: true
   },
   {
-    path: '/sd603-report',
-    name: 'sd603Report',
-    component: SD603Report,
+    path: '/reports/keywords-and-phrases',
+    name: 'keywordsAndPhrasesReport',
+    component: KeywordsAndPhrasesReport,
     beforeEnter: isAdmin
   },
   {

@@ -1,13 +1,13 @@
 package edu.si.ossearch.reports.service.impl;
 
 import edu.si.ossearch.collection.repository.CollectionRepository;
-import edu.si.ossearch.reports.dto.SD603ReportRequest;
-import edu.si.ossearch.reports.dto.SD603ReportResponse;
-import edu.si.ossearch.reports.dto.SD603ReportResponse.CollectionResult;
-import edu.si.ossearch.reports.dto.SD603ReportResponse.TermMatch;
-import edu.si.ossearch.reports.dto.SD603ReportResponse.TermSummary;
-import edu.si.ossearch.reports.dto.SD603ReportResponse.UrlResult;
-import edu.si.ossearch.reports.service.SD603ReportService;
+import edu.si.ossearch.reports.dto.KeywordsAndPhrasesReportRequest;
+import edu.si.ossearch.reports.dto.KeywordsAndPhrasesReportResponse;
+import edu.si.ossearch.reports.dto.KeywordsAndPhrasesReportResponse.CollectionResult;
+import edu.si.ossearch.reports.dto.KeywordsAndPhrasesReportResponse.TermMatch;
+import edu.si.ossearch.reports.dto.KeywordsAndPhrasesReportResponse.TermSummary;
+import edu.si.ossearch.reports.dto.KeywordsAndPhrasesReportResponse.UrlResult;
+import edu.si.ossearch.reports.service.KeywordsAndPhrasesReportService;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.solr.client.solrj.SolrClient;
 import org.apache.solr.client.solrj.SolrQuery;
@@ -30,14 +30,14 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * Implementation of SD603ReportService.
+ * Implementation of KeywordsAndPhrasesReportService.
  * Searches Solr for specified terms across collections and organizes results.
  *
  * @author jbirkhimer
  */
 @Slf4j
 @Service
-public class SD603ReportServiceImpl implements SD603ReportService {
+public class KeywordsAndPhrasesReportServiceImpl implements KeywordsAndPhrasesReportService {
 
     @Value(value = "${spring.data.solr.collection}")
     @NonNull
@@ -54,8 +54,8 @@ public class SD603ReportServiceImpl implements SD603ReportService {
     private static final int MAX_ROWS = Integer.MAX_VALUE;
 
     @Override
-    public SD603ReportResponse generateReport(SD603ReportRequest request) throws SolrServerException, IOException {
-        log.info("Generating SD603 report for collections: {} with terms: {}",
+    public KeywordsAndPhrasesReportResponse generateReport(KeywordsAndPhrasesReportRequest request) throws SolrServerException, IOException {
+        log.info("Generating Keywords and Phrases report for collections: {} with terms: {}",
                 request.getCollectionIds(), request.getSearchTerms());
 
         // Build a map of collection ID to collection name
@@ -152,7 +152,7 @@ public class SD603ReportServiceImpl implements SD603ReportService {
                         .build())
                 .collect(Collectors.toList());
 
-        return SD603ReportResponse.builder()
+        return KeywordsAndPhrasesReportResponse.builder()
                 .generatedAt(new Date())
                 .totalMatches(totalMatches)
                 .byCollection(collectionResults)
@@ -161,7 +161,7 @@ public class SD603ReportServiceImpl implements SD603ReportService {
     }
 
     @Override
-    public ByteArrayInputStream exportToCsv(SD603ReportResponse report) {
+    public ByteArrayInputStream exportToCsv(KeywordsAndPhrasesReportResponse report) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try (PrintWriter writer = new PrintWriter(out)) {
             // Write CSV header

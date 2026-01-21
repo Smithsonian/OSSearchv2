@@ -9,7 +9,7 @@ import java.util.Date;
 import java.util.List;
 
 /**
- * Response DTO for SD603 Report.
+ * Response DTO for Keywords and Phrases Report.
  * Contains the report results organized by collection and term, with summary statistics.
  *
  * @author jbirkhimer
@@ -18,7 +18,7 @@ import java.util.List;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class SD603ReportResponse {
+public class KeywordsAndPhrasesReportResponse {
 
     /**
      * Timestamp when the report was generated.

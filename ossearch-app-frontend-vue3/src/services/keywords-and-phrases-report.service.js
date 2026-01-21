@@ -1,27 +1,27 @@
 import api from './api';
 
-class SD603ReportService {
+class KeywordsAndPhrasesReportService {
   /**
-   * Generate SD603 report for specified collections and search terms
+   * Generate Keywords and Phrases report for specified collections and search terms
    * @param {number[]} collectionIds - Array of collection IDs to search
    * @param {string[]} searchTerms - Array of search terms/phrases
    * @returns {Promise} API response with report data
    */
   generateReport(collectionIds, searchTerms) {
-    return api.post('/reports/sd603', {
+    return api.post('/reports/keywords-and-phrases', {
       collectionIds: collectionIds,
       searchTerms: searchTerms
     });
   }
 
   /**
-   * Export SD603 report as CSV file
+   * Export Keywords and Phrases report as CSV file
    * @param {number[]} collectionIds - Array of collection IDs to search
    * @param {string[]} searchTerms - Array of search terms/phrases
    * @returns {Promise} API response with CSV blob
    */
   exportCsv(collectionIds, searchTerms) {
-    return api.post('/reports/sd603/export', {
+    return api.post('/reports/keywords-and-phrases/export', {
       collectionIds: collectionIds,
       searchTerms: searchTerms
     }, {
@@ -30,4 +30,4 @@ class SD603ReportService {
   }
 }
 
-export default new SD603ReportService();
+export default new KeywordsAndPhrasesReportService();
