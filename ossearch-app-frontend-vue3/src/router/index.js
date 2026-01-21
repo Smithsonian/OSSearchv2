@@ -368,8 +368,7 @@ const routes = [
   {
     path: '/reports/keywords-and-phrases',
     name: 'keywordsAndPhrasesReport',
-    component: KeywordsAndPhrasesReport,
-    beforeEnter: isAdmin
+    component: KeywordsAndPhrasesReport
   },
   {
     path: '/about',

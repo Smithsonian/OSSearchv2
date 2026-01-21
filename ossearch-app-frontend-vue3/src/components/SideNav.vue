@@ -41,6 +41,26 @@
           Crawl Scheduler
         </router-link>
 
+        <li class="nav-item">
+          <a href="#" class="nav-link collapsed"
+             data-bs-toggle="collapse"
+             data-bs-target="#collapseReports"
+             aria-expanded="false"
+             aria-controls="collapseReports">
+            <i class="fas fa-chart-bar me-2"></i>
+            Reports
+            <i class="fas fa-angle-down ms-auto float-end sb-sidenav-collapse-arrow"></i>
+          </a>
+        </li>
+        <div class="collapse" id="collapseReports">
+          <ul class="nav flex-column mb-auto ms-4">
+            <router-link class="nav-link" to="/reports/keywords-and-phrases">
+              <i class="fas fa-file-alt me-2"></i>
+              Keywords and Phrases
+            </router-link>
+          </ul>
+        </div>
+
         <template v-if="isAdmin">
           <router-link class="nav-link" to="/users">
             <i class="fas fa-users me-2"></i>
@@ -58,25 +78,6 @@
             <i class="fas fa-history me-2"></i>
             Reindex
           </router-link>
-          <li class="nav-item">
-            <a href="#" class="nav-link collapsed"
-               data-bs-toggle="collapse"
-               data-bs-target="#collapseReports"
-               aria-expanded="false"
-               aria-controls="collapseReports">
-              <i class="fas fa-chart-bar me-2"></i>
-              Reports
-              <i class="fas fa-angle-down ms-auto float-end sb-sidenav-collapse-arrow"></i>
-            </a>
-          </li>
-          <div class="collapse" id="collapseReports">
-            <ul class="nav flex-column mb-auto ms-4">
-              <router-link class="nav-link" to="/reports/keywords-and-phrases">
-                <i class="fas fa-file-alt me-2"></i>
-                Keywords and Phrases
-              </router-link>
-            </ul>
-          </div>
         </template>
 
         <router-link class="nav-link" to="/about">

@@ -51,7 +51,7 @@ public class KeywordsAndPhrasesReportController {
      * @return The report response with matches organized by collection and term
      */
     @PostMapping
-    @PreAuthorize("hasRole('ROLE_ADMIN')")
+    @PreAuthorize("isAuthenticated()")
     @Operation(
             summary = "Generate Keywords and Phrases Report - Search for words/phrases across collections",
             description = "Searches for the specified words or phrases across the selected collections " +
@@ -93,7 +93,7 @@ public class KeywordsAndPhrasesReportController {
      * @return CSV file download response
      */
     @PostMapping(value = "/export", produces = "text/csv")
-    @PreAuthorize("hasRole('ROLE_ADMIN')")
+    @PreAuthorize("isAuthenticated()")
     @Operation(
             summary = "Export Keywords and Phrases Report as CSV",
             description = "Generates a Keywords and Phrases report and exports it as a downloadable CSV file.",
