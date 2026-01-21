@@ -18,20 +18,30 @@
             <span class="sr-only">Loading...</span>
           </div>
         </div>
-        <DualListBox
+        <Multiselect
           v-else
-          :source="collectionsAvailable"
-          :destination="collectionsSelected"
+          v-model="collectionsSelected"
+          :options="collections"
+          :multiple="true"
+          :searchable="true"
+          :close-on-select="false"
+          :clear-on-select="false"
+          :preserve-search="true"
+          trackBy="id"
           label="name"
-          @onChangeList="onChangeList"
+          placeholder="Select collections..."
+          :loading="loading"
         >
-          <template v-slot:source>
-            <h5>Available Collections</h5>
+          <template #noResult>
+            No collections found matching your search.
           </template>
-          <template v-slot:destination>
-            <h5>Selected Collections</h5>
+          <template #noOptions>
+            No collections available.
           </template>
-        </DualListBox>
+        </Multiselect>
+        <small class="text-muted mt-1 d-block">
+          {{ collectionsSelected.length }} collection(s) selected
+        </small>
       </div>
     </div>
 
@@ -237,7 +247,7 @@
 
 <script>
 import Breadcrumb from "../../components/Breadcrumb.vue";
-import DualListBox from "../../components/DualListBox.vue";
+import Multiselect from "vue-multiselect";
 import CollectionService from "../../services/collection.service";
 import KeywordsAndPhrasesReportService from "../../services/keywords-and-phrases-report.service";
 
@@ -245,7 +255,7 @@ export default {
   name: "KeywordsAndPhrasesReport",
   components: {
     Breadcrumb,
-    DualListBox,
+    Multiselect,
   },
   data() {
     return {
@@ -254,7 +264,6 @@ export default {
       exporting: false,
       error: null,
       collections: [],
-      collectionsAvailable: [],
       collectionsSelected: [],
       manualTerms: "",
       fileTerms: [],
@@ -290,14 +299,9 @@ export default {
         });
         this.collections = response.data._embedded.collection;
         this.collections.sort((a, b) => a.name.localeCompare(b.name));
-        this.collectionsAvailable = JSON.parse(JSON.stringify(this.collections));
       } catch (err) {
         this.error = err.message || err.toString();
       }
-    },
-    onChangeList({ source, destination }) {
-      this.collectionsAvailable = source;
-      this.collectionsSelected = destination;
     },
     handleFileUpload(event) {
       const file = event.target.files[0];
