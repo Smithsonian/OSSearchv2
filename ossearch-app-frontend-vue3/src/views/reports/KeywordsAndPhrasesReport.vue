@@ -6,6 +6,41 @@
   <div class="container-fluid px-4">
     <Breadcrumb />
 
+    <!-- Report Description -->
+    <div class="card mb-3">
+      <div class="card-header">
+        <i class="fas fa-info-circle me-1"></i>
+        <b>About This Report</b>
+      </div>
+      <div class="card-body">
+        <p>
+          The <strong>Keywords and Phrases Report</strong> searches selected collections
+          for exact phrase matches. Use this report to find all pages containing specific
+          keywords or phrases across your collections.
+        </p>
+        <p class="mb-2"><strong>Fields Searched:</strong></p>
+        <ul class="mb-2">
+          <li><strong>Content</strong> - The main body text of each page</li>
+          <li><strong>Title</strong> - The page title</li>
+          <li><strong>Anchor Text</strong> - Text from links pointing to the page</li>
+          <li><strong>URL &amp; Host</strong> - The page URL and domain</li>
+          <li><strong>Meta Tags</strong> - HTML meta tags including:
+            <ul>
+              <li>Standard meta tags (description, keywords, author)</li>
+              <li>Dublin Core metadata (dc.title, dc.creator, dc.subject, etc.)</li>
+              <li>Open Graph metadata (og:title, og:description, etc.)</li>
+              <li>Twitter Card metadata (twitter:title, twitter:description, etc.)</li>
+              <li>Custom metadata fields specific to collections</li>
+            </ul>
+          </li>
+        </ul>
+        <p class="mb-0">
+          <strong>Results Include:</strong> Page URL, title, and anchor text from links
+          pointing to each matching page. Results are organized by collection and search term.
+        </p>
+      </div>
+    </div>
+
     <!-- Collection Selection Card -->
     <div class="card mb-3">
       <div class="card-header">
