@@ -163,16 +163,17 @@
         <!-- Summary -->
         <div class="alert alert-info">
           <strong>Total Matches:</strong> {{ reportData.totalMatches }} URLs found
+          in {{ collectionsWithResults.length }} of {{ totalCollectionsSearched }} collection(s)
           <span class="ms-3">
             <strong>Generated:</strong> {{ formatDate(reportData.generatedAt) }}
           </span>
         </div>
 
-        <!-- Results by Collection -->
+        <!-- Results by Collection (only showing collections with results) -->
         <div class="accordion" id="resultsAccordion">
           <div
             class="accordion-item"
-            v-for="(collection, collIdx) in reportData.byCollection"
+            v-for="(collection, collIdx) in collectionsWithResults"
             :key="collection.collectionId"
           >
             <h2 class="accordion-header" :id="'collectionHeading' + collIdx">
@@ -255,7 +256,7 @@
         </div>
 
         <!-- Empty Results Message -->
-        <div v-if="reportData.byCollection.length === 0" class="alert alert-warning">
+        <div v-if="collectionsWithResults.length === 0" class="alert alert-warning">
           No results found for the selected collections and search terms.
         </div>
       </div>
@@ -301,6 +302,16 @@ export default {
     },
     canGenerate() {
       return this.collectionsSelected.length > 0 && this.searchTerms.length > 0;
+    },
+    collectionsWithResults() {
+      if (!this.reportData || !this.reportData.byCollection) return [];
+      return this.reportData.byCollection.filter(
+        (collection) => this.getTotalUrls(collection) > 0
+      );
+    },
+    totalCollectionsSearched() {
+      if (!this.reportData || !this.reportData.byCollection) return 0;
+      return this.reportData.byCollection.length;
     },
   },
   async mounted() {
