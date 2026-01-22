@@ -32,6 +32,24 @@
           placeholder="Select collections..."
           :loading="loading"
         >
+          <template #beforeList>
+            <div class="multiselect-select-actions">
+              <button
+                type="button"
+                class="btn btn-sm btn-outline-primary me-2"
+                @click.stop="selectAllCollections"
+              >
+                Select All
+              </button>
+              <button
+                type="button"
+                class="btn btn-sm btn-outline-secondary"
+                @click.stop="clearAllCollections"
+              >
+                Clear All
+              </button>
+            </div>
+          </template>
           <template #noResult>
             No collections found matching your search.
           </template>
@@ -303,6 +321,12 @@ export default {
         this.error = err.message || err.toString();
       }
     },
+    selectAllCollections() {
+      this.collectionsSelected = [...this.collections];
+    },
+    clearAllCollections() {
+      this.collectionsSelected = [];
+    },
     handleFileUpload(event) {
       const file = event.target.files[0];
       if (!file) return;
@@ -388,6 +412,12 @@ export default {
 .error {
   color: #dc3545;
   margin-bottom: 1rem;
+}
+
+.multiselect-select-actions {
+  padding: 0.5rem;
+  border-bottom: 1px solid #dee2e6;
+  background-color: #f8f9fa;
 }
 
 .accordion-button:not(.collapsed) {
