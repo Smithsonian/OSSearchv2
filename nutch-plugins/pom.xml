@@ -15,6 +15,7 @@
     <packaging>pom</packaging>
 
     <modules>
+        <module>lib-selenium</module>
         <module>index-blacklist-whitelist</module>
         <module>index-metadata</module>
         <module>index-more</module>
@@ -115,6 +116,7 @@
                                     <!-- Exclude the default indexer-solr - we'll use our custom one -->
                                     <excludes>
                                         <exclude>indexer-solr/**</exclude>
+                                        <exclude>lib-selenium/**</exclude>
                                     </excludes>
                                 </resource>
                             </resources>
