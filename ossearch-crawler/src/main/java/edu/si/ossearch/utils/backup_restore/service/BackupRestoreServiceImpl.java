@@ -19,6 +19,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.yarn.webapp.hamlet2.Hamlet.P;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,6 +37,7 @@ import org.springframework.stereotype.Service;
 import jakarta.transaction.Transactional;
 import java.io.*;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -139,15 +141,27 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
         return new JSONObject(getJsonString(collectionExport));
     }
 
-    private JSONObject exportCrawlSchedulerJobInfo(String collectionName) throws JsonProcessingException {
-        CrawlSchedulerJobInfo crawlSchedulerJobInfo = crawlSchedulerJobInfoRepository.findByCollectionName(collectionName);
-        if (crawlSchedulerJobInfo != null) {
+    private JSONArray exportCrawlSchedulerJobInfo(String collectionName) throws JsonProcessingException {
+        List<CrawlSchedulerJobInfo> jobs = crawlSchedulerJobInfoRepository.findByCollectionName(collectionName);
+        JSONArray jobsArray = new JSONArray();
+        if (jobs != null) {
             ProjectionFactory crawlProjectionFactory = new SpelAwareProxyProjectionFactory();
-            CrawlSchedulerJobInfoInfoExport crawlSchedulerJobInfoExport = crawlProjectionFactory.createProjection(CrawlSchedulerJobInfoInfoExport.class, crawlSchedulerJobInfo);
-            return new JSONObject(getJsonString(crawlSchedulerJobInfoExport));
-        } else {
-            return new JSONObject();
+            for (CrawlSchedulerJobInfo job : jobs) {
+                CrawlSchedulerJobInfoInfoExport export =
+                    crawlProjectionFactory.createProjection(CrawlSchedulerJobInfoInfoExport.class, job);
+                jobsArray.put(new JSONObject(getJsonString(export)));
+            }
         }
+        return jobsArray;
+    }
+
+    private void writeZipEntry(ZipOutputStream zipOut, String filename, String content) throws IOException {
+        byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
+        ZipEntry entry = new ZipEntry(filename);
+        entry.setSize(bytes.length);
+        zipOut.putNextEntry(entry);
+        zipOut.write(bytes);
+        zipOut.closeEntry();
     }
 
     private void saveLocalBackup(String collectionDir, JSONObject json) throws IOException {
@@ -193,8 +207,8 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
                 JSONObject collectionStatus = new JSONObject();
                 restoreStatus.put("collection", collectionStatus);
 
-                JSONObject crawlSchedulerJobInfoStatus = new JSONObject();
-                restoreStatus.put("crawlSchedulerJobInfo", crawlSchedulerJobInfoStatus);
+                JSONArray crawlSchedulerJobInfoStatuses = new JSONArray();
+                restoreStatus.put("crawlSchedulerJobInfo", crawlSchedulerJobInfoStatuses);
 
                 message.put(restoreStatus);
 
@@ -220,19 +234,32 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
                         //throw new OSSearchException("Failed to restore collection from file " + file.get("filename"), e);
                     }
 
-                    try {
-                        if (json.has("crawlSchedulerJobInfo") && !json.getJSONObject("crawlSchedulerJobInfo").isEmpty()) {
-                            JSONObject crawlSchedulerJobInfoJson = json.getJSONObject("crawlSchedulerJobInfo");
-                            restoreCrawlSchedulerJobInfo(collectionStatus.getLong("id"), crawlSchedulerJobInfoJson, crawlSchedulerJobInfoStatus);
-                        } else {
-                            crawlSchedulerJobInfoStatus.put("status", "N/A");
+                    Object raw = json.opt("crawlSchedulerJobInfo");
+                    List<JSONObject> jobJsons = new ArrayList<>();
+
+                    if (raw instanceof JSONArray) {
+                        JSONArray arr = (JSONArray) raw;
+                        for (int i = 0; i< arr.length(); i++) {
+                            jobJsons.add(arr.getJSONObject(i));
                         }
-                    } catch (Exception e) {
-                        log.error("Fail to restore crawlSchedulerJobInfo from file! {}", file.get("filename"), e);
-                        crawlSchedulerJobInfoStatus.put("status", "failed");
-                        crawlSchedulerJobInfoStatus.append("error", e.getMessage());
+                    } else if (raw instanceof JSONObject && !((JSONObject) raw).isEmpty()) {
+                        jobJsons.add((JSONObject) raw);
                     }
 
+                    for (JSONObject jobJson : jobJsons) {
+                        JSONObject jobStatus = new JSONObject();
+                        jobStatus.put("jobName", jobJson.optString("jobName"));
+                        jobStatus.put("jobGroup", jobJson.optString("jobGroup"));
+                        crawlSchedulerJobInfoStatuses.put(jobStatus);
+
+                        try {
+                            restoreCrawlSchedulerJobInfo(collectionStatus.getLong("id"), jobJson, jobStatus);
+                        } catch (Exception e) {
+                            log.error("Fail to restore crawlSchedulerJobInfo from file! {}", file.get("filename"), e);
+                            jobStatus.put("status", "failed");
+                            jobStatus.append("error", e.getMessage());
+                        }
+                    }
                 } catch (Exception e) {
                     restoreStatus.put("status", "failed");
                     restoreStatus.append("error", e.getMessage());
@@ -252,30 +279,32 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
         String zipFilename = "ossearch_bulk_collections_backup_" + new SimpleDateFormat("yyyy-MM-dd'T'HH-mm-ss").format(new Date()) + ".zip";
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
 
+        // Collections that failed to back up, reported to the client via the X-Backup-Errors response header.
+        JSONArray backupErrors = new JSONArray();
+
             try(ZipOutputStream zipOut = new ZipOutputStream(baos)) {
 
                 for (Long id : ids) {
+
+                    String timestamp = new SimpleDateFormat("yyyy-MM-dd'T'HH-mm-ss").format(new Date());
                     Optional<String> collectionName = collectionRepository.findCollectionById(id);
+                    String name = collectionName.orElse("unknown");
 
-                    if (collectionName.isPresent()) {
+                    // Back up each collection independently so one failure does not abort the whole zip.
+                    try {
 
-                        String filePrefix = collectionName.get() + "_" + id + "_backup";
-                        String filename = filePrefix + "_" + new SimpleDateFormat("yyyy-MM-dd'T'HH-mm-ss").format(new Date()) + ".json";
+                        if (collectionName.isEmpty()) {
+                            throw new IllegalArgumentException("Collection not found for id " + id + "!");
+                        }
 
                         JSONObject json = new JSONObject();
 
                         json.put("collection", exportCollection(id));
 
-                        collectionName = Optional.ofNullable(json.getJSONObject("collection").getString("name"));
+                        name = json.getJSONObject("collection").getString("name");
 
                         if (withCrawlSchedule) {
-                            /*JSONObject crawlSchedulerJobInfo = exportCrawlSchedulerJobInfo(collectionName.get());
-                            if (crawlSchedulerJobInfo.isEmpty()) {
-                                json.put("crawlSchedulerJobInfo", "no crawl schedule available");
-                            } else {
-                                json.put("crawlSchedulerJobInfo", crawlSchedulerJobInfo);
-                            }*/
-                            json.put("crawlSchedulerJobInfo", exportCrawlSchedulerJobInfo(collectionName.get()));
+                            json.put("crawlSchedulerJobInfo", exportCrawlSchedulerJobInfo(name));
                         }
 
                         if (!includeUsers) {
@@ -283,34 +312,48 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
                             json.getJSONObject("collection").remove("users");
                         }
 
-                        saveLocalBackup(collectionName.get() + "_" + id, json);
+                        saveLocalBackup(name + "_" + id, json);
 
-                        byte[] bytes = json.toString(4).getBytes(StandardCharsets.UTF_8);
+                        writeZipEntry(zipOut, name + "_" + id + "_backup_" + timestamp + ".json", json.toString(4));
 
-                        ZipEntry entry = new ZipEntry(filename);
-                        entry.setSize(bytes.length);
-                        zipOut.putNextEntry(entry);
-                        zipOut.write(bytes);
-                        zipOut.closeEntry();
+                    } catch (Exception e) {
+                        log.error("There was an error with the Backup of collection id: {}, name: {}", id, name, e);
 
-                    } else {
-                        return ResponseEntity.status(HttpStatus.NOT_FOUND).body("Bulk Backup Error! Collection not found!");
+                        JSONObject errorJson = new JSONObject();
+                        errorJson.put("collectionId", id);
+                        errorJson.put("collectionName", name);
+                        errorJson.put("status", "failed");
+                        errorJson.put("error", e.getMessage());
+                        errorJson.put("errorType", e.getClass().getName());
+                        errorJson.put("timestamp", timestamp);
+
+                        writeZipEntry(zipOut, name + "_" + id + "_backup_" + timestamp + "_ERROR.json", errorJson.toString(4));
+
+                        backupErrors.put(new JSONObject()
+                                .put("collectionId", id)
+                                .put("collectionName", name)
+                                .put("error", String.valueOf(e.getMessage())));
                     }
-
                 }
 
                 zipOut.finish();
-                zipOut.close();
 
             } catch (Exception e) {
                 log.error("Problem with bulk backup!", e);
                 return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Problem with bulk backup! Error: " + e.getMessage());
             }
 
-        return ResponseEntity.ok()
+        ResponseEntity.BodyBuilder response = ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=" + zipFilename)
-                .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                .body(baos.toByteArray());
+                .contentType(MediaType.APPLICATION_OCTET_STREAM);
+
+        if (!backupErrors.isEmpty()) {
+            log.warn("Bulk backup completed with {} failed collection(s): {}", backupErrors.length(), backupErrors);
+            // Header values must be single-line ASCII, so encode the JSON payload.
+            response.header("X-Backup-Errors", URLEncoder.encode(backupErrors.toString(), StandardCharsets.UTF_8));
+        }
+
+        return response.body(baos.toByteArray());
     }
 
     @Override
@@ -467,7 +510,8 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
             crawlSchedulerJobInfoStatus.put("status",  status ? "updated" : "failed");
         }
 
-        if (crawlSchedulerJobInfo.getJobStatus().contains("PAUSED")) {
+        String jobStatus = crawlSchedulerJobInfo.getJobStatus();
+        if (jobStatus != null && jobStatus.contains("PAUSED")) {
             status = jobService.pauseJob(jobName, jobGroup);
             crawlSchedulerJobInfoStatus.put("state", status ? "paused crawl schedule" : "failed to pause crawl schedule");
         }

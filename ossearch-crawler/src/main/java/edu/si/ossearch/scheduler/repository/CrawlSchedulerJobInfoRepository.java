@@ -10,6 +10,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -29,7 +30,7 @@ public interface CrawlSchedulerJobInfoRepository extends JpaRepository<CrawlSche
 
     //Page<CrawlSchedulerJobInfo> findByCollectionName(String collectionName, Pageable pageable);
 
-    CrawlSchedulerJobInfo findByCollectionName(String collectionName);
+    List<CrawlSchedulerJobInfo> findByCollectionName(String collectionName);
 
     CrawlSchedulerJobInfo findByJobName(String jobName);
 

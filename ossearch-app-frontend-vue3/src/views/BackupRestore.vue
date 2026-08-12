@@ -487,16 +487,33 @@
               <template v-else> none </template>
             </td>
             <td>
-              <router-link v-if="br.crawlSchedulerJobInfo.status !== 'N/A'" :to="{ name: 'crawlScheduleDetails', params: { jobName: br.collection.name, groupName: 'scheduled_crawl', }, }" target="_blank">view</router-link>
+              <template v-if="br.crawlSchedulerJobInfo?.length">
+                <div v-for="job in br.crawlSchedulerJobInfo" :key="job.jobName + '_' + job.jobGroup">
+                  <router-link :to="{ name: 'crawlScheduleDetails', params: { jobName: job.jobName, groupName: job.jobGroup, }, }" target="_blank">{{ job.jobName }}</router-link>
+                </div>
+              </template>
               <template v-else>none</template>
             </td>
             <td>
-              <span v-if="br.crawlSchedulerJobInfo.status === 'failed'" class="badge rounded-pill bg-danger text-danger bg-opacity-25">{{ br.crawlSchedulerJobInfo.status }}</span>
-              <span v-else-if="br.crawlSchedulerJobInfo.status === 'created'" class="badge rounded-pill bg-success text-success bg-opacity-25">{{ br.crawlSchedulerJobInfo.status }}</span>
-              <span v-else class="badge rounded-pill bg-warning text-warning bg-opacity-25">{{ br.crawlSchedulerJobInfo.status }}</span>
+              <template v-if="br.crawlSchedulerJobInfo?.length">
+                <div v-for="job in br.crawlSchedulerJobInfo" :key="job.jobName + '_' + job.jobGroup">
+                  <span v-if="job.status === 'failed'" class="badge rounded-pill bg-danger text-danger bg-opacity-25">{{ job.status }}</span>
+                  <span v-else-if="job.status === 'created'" class="badge rounded-pill bg-success text-success bg-opacity-25">{{ job.status }}</span>
+                  <span v-else class="badge rounded-pill bg-warning text-warning bg-opacity-25">{{ job.status }}</span>
+                </div>
+              </template>
+              <template v-else>none</template>
             </td>
             <td>
-              {{ br.crawlSchedulerJobInfo.error ? br.crawlSchedulerJobInfo.error : "none" }}
+              <template v-if="br.crawlSchedulerJobInfo?.length">
+                <div v-for="job in br.crawlSchedulerJobInfo" :key="job.jobName + '_' + job.jobGroup">
+                  <template v-if="job.error">
+                    <a class="link-danger" href="#" data-bs-toggle="modal" data-bs-target="#localRestoreStatusErrorModal" @click="localRestoreStatusError = job.error">details</a>
+                  </template>
+                  <template v-else>none</template>
+                </div>
+              </template>
+              <template v-else>none</template>
             </td>
           </tr>
         </tbody>
@@ -572,6 +589,7 @@ export default {
       loading: false,
       backingup: false,
       availableBackupsError: null,
+      backupErrors: [],
       error: null,
       collections: [],
       collectionsAvailable: [],
@@ -730,6 +748,8 @@ export default {
           docUrl.setAttribute("download", fileName);
           document.body.appendChild(docUrl);
           docUrl.click();
+
+          this.notifyBackupErrors(response.headers["x-backup-errors"]);
         })
         .catch(async (errors) => {
           // console.log(errors);
@@ -760,6 +780,40 @@ export default {
         }
       }
       return (data && (data.message || data.error)) || errors.message;
+    },
+    notifyBackupErrors(errorHeader) {
+      if (!errorHeader) {
+        EventBus.dispatch("toast", {
+          type: "success",
+          msg: "All collection backups completed successfully.",
+        });
+        return;
+      }
+
+      let failed = [];
+      try {
+        failed = JSON.parse(decodeURIComponent(errorHeader));
+      } catch (e) {
+        EventBus.dispatch("toast", {
+          type: "danger",
+          msg: "Some collection backups failed. See the _ERROR.json files in the downloaded zip.",
+        });
+        return;
+      }
+
+      this.backupErrors = failed;
+
+      failed.forEach((f) => {
+        EventBus.dispatch("toast", {
+          type: "danger",
+          msg: `Backup failed for "${f.collectionName}" (id ${f.collectionId}): ${f.error}`,
+        });
+      });
+
+      EventBus.dispatch("toast", {
+        type: "warning",
+        msg: `${failed.length} of ${this.collectionsToBackup.length} collection backup(s) failed. An _ERROR.json file was added to the zip for each.`,
+      });
     },
     async getAvailableBackups() {
       this.availableBackupsError = null;
