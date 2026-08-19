@@ -1014,6 +1014,12 @@ public class Crawler {
                 Configuration indexConf = new Configuration(conf);
                 indexConf.set("nutch.conf.uuid", UUID.randomUUID().toString());
 
+                // The index step must run its tasks serially regardless of the
+                // mapreduce.local.*.tasks.maximum values in nutch-site.xml or job
+                // overrides: concurrent indexing maps caused Solr commit failures.
+                indexConf.setInt("mapreduce.local.map.tasks.maximum", 1);
+                indexConf.setInt("mapreduce.local.reduce.tasks.maximum", 1);
+
                 Map<String, String> indexArgs = jobInfo.getNutchStepArgs().getIndex();
 
                 boolean noCrawlDb = false;
@@ -1637,9 +1643,11 @@ public class Crawler {
             }
             conf.set("plugin.folders", pluginDir.getCanonicalPath());
 
-            // Seems to cause issues when indexing to solr failing on commit
-            //conf.set("mapreduce.local.map.tasks.maximum", "2");
-            //conf.set("mapreduce.local.reduce.tasks.maximum", "2");
+            // LocalJobRunner parallelism (mapreduce.local.map.tasks.maximum /
+            // mapreduce.local.reduce.tasks.maximum) comes from nutch-site.xml and
+            // can be overridden per job via nutch properties. The index step
+            // overrides both to 1 in index(): concurrent indexing maps caused
+            // Solr commit failures, so indexing always runs serially.
 
             //Name of file on CLASSPATH containing regular expressions used by urlfilter-regex (RegexURLFilter) plugin. Can also use urlfilter.regex.file property
 //            conf.set("urlfilter.regex.file", "conf/regex-urlfilter.txt");

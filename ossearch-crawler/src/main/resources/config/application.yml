@@ -87,6 +87,10 @@ spring:
     jdbc:
       platform: mysql
       initialize-schema: never
+    properties:
+      # Max simultaneous scheduled jobs (crawls). Quartz default is 10, which
+      # silently queues the 11th concurrent crawl.
+      org.quartz.threadPool.threadCount: 20
 
   ldap:
     urls: ldaps://xxxxxxxxx

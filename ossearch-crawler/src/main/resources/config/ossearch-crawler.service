@@ -7,7 +7,11 @@ RequiresMountsFor=/data
 Environment="PATH=/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin"
 User=apache
 #ExecStart=@project.build.directory@/@project.build.finalName@.jar
-ExecStart=/usr/bin/java -Djava.security.manager=allow -Dloader.path=conf -jar @project.build.directory@/@project.build.finalName@.jar
+# -Xmx96g: MR machinery worst case (~20G map sort buffers + ~38G reduce shuffle
+#   at 10 concurrent crawls) plus app headroom; remaining RAM stays OS page cache.
+# Generational ZGC: sub-ms GC pauses so search requests served by this JVM are
+#   not stalled by crawl garbage collection.
+ExecStart=/usr/bin/java -Xmx96g -XX:+UseZGC -XX:+ZGenerational -Djava.security.manager=allow -Dloader.path=conf -jar @project.build.directory@/@project.build.finalName@.jar
 
 WorkingDirectory=@project.build.directory@
 SuccessExitStatus=143
