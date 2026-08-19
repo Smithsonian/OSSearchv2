@@ -292,9 +292,11 @@
       <h3>Collection Details</h3>
       <pre>{{ print(backupFileForView?.data?.collection) }}</pre>
       <h3>CrawlSchedulerJobInfo Details</h3>
-      <pre v-if="backupFileForView?.data?.crawlSchedulerJobInfo">{{
-        print(backupFileForView?.data?.crawlSchedulerJobInfo)
-      }}</pre>
+      <pre v-if="normalizeCrawlSchedulerJobInfo(backupFileForView?.data?.crawlSchedulerJobInfo).length">
+        <div v-for="job in normalizeCrawlSchedulerJobInfo(backupFileForView?.data?.crawlSchedulerJobInfo)" :key="job.jobName + '_' + job.jobGroup">
+          {{print(job)}}
+        </div>
+      </pre>
       <p v-else>No Crawl Scheduler Job Info Available</p>
     </template>
     <template v-slot:footer>
@@ -491,43 +493,71 @@
               <template v-else> none </template>
             </td>
             <td>
-              <router-link
-                v-if="br.crawlSchedulerJobInfo.status !== 'N/A'"
-                :to="{
-                  name: 'crawlScheduleDetails',
-                  params: {
-                    jobName: br.collection.name,
-                    groupName: 'scheduled_crawl',
-                  },
-                }"
-                target="_blank"
-                >view</router-link
-              >
+              <template v-if="br.crawlSchedulerJobInfo?.length">
+                <div
+                  v-for="job in br.crawlSchedulerJobInfo"
+                  :key="job.jobName + '_' + job.jobGroup"
+                >
+                  <router-link
+                    :to="{
+                      name: 'crawlScheduleDetails',
+                      params: {
+                        jobName: job.jobName,
+                        groupName: job.jobGroup,
+                      },
+                    }"
+                    target="_blank"
+                    >{{ job.jobName }}</router-link
+                  >
+                </div>
+              </template>
               <template v-else>none</template>
             </td>
             <td>
-              <span
-                v-if="br.crawlSchedulerJobInfo.status === 'failed'"
-                class="badge rounded-pill bg-danger text-danger bg-opacity-25"
-                >{{ br.crawlSchedulerJobInfo.status }}</span
-              >
-              <span
-                v-else-if="br.crawlSchedulerJobInfo.status === 'created'"
-                class="badge rounded-pill bg-success text-success bg-opacity-25"
-                >{{ br.crawlSchedulerJobInfo.status }}</span
-              >
-              <span
-                v-else
-                class="badge rounded-pill bg-warning text-warning bg-opacity-25"
-                >{{ br.crawlSchedulerJobInfo.status }}</span
-              >
+              <template v-if="br.crawlSchedulerJobInfo?.length">
+                <div
+                  v-for="job in br.crawlSchedulerJobInfo"
+                  :key="job.jobName + '_' + job.jobGroup"
+                >
+                  <span
+                    v-if="job.status === 'failed'"
+                    class="badge rounded-pill bg-danger text-danger bg-opacity-25"
+                    >{{ job.status }}</span
+                  >
+                  <span
+                    v-else-if="job.status === 'created'"
+                    class="badge rounded-pill bg-success text-success bg-opacity-25"
+                    >{{ job.status }}</span
+                  >
+                  <span
+                    v-else
+                    class="badge rounded-pill bg-warning text-warning bg-opacity-25"
+                    >{{ job.status }}</span
+                  >
+                </div>
+              </template>
+              <template v-else>none</template>
             </td>
             <td>
-              {{
-                br.crawlSchedulerJobInfo.error
-                  ? br.crawlSchedulerJobInfo.error
-                  : "none"
-              }}
+              <template v-if="br.crawlSchedulerJobInfo?.length">
+                <div
+                  v-for="job in br.crawlSchedulerJobInfo"
+                  :key="job.jobName + '_' + job.jobGroup"
+                >
+                  <template v-if="job.error">
+                    <a
+                      class="link-danger"
+                      href="#"
+                      data-bs-toggle="modal"
+                      data-bs-target="#localRestoreStatusErrorModal"
+                      @click="localRestoreStatusError = job.error"
+                      >details</a
+                    >
+                  </template>
+                  <template v-else>none</template>
+                </div>
+              </template>
+              <template v-else>none</template>
             </td>
           </tr>
         </tbody>
@@ -590,6 +620,7 @@
 <script>
 import Modal from "../../../components/Modal";
 import EventBus from "../../../common/EventBus";
+import { normalizeCrawlSchedulerJobInfo } from "../../../common/backupRestoreUtils";
 import CollectionService from "../../../services/collection.service";
 import api from "@/services/api";
 import Datatable from "../../../components/table/Datatable.vue";
@@ -760,13 +791,39 @@ export default {
           docUrl.setAttribute("download", fileName);
           document.body.appendChild(docUrl);
           docUrl.click();
+
+          EventBus.dispatch("toast", {
+            type: "success",
+            msg: `Backup created for "${this.collection.name}".`,
+          });
         })
-        .catch((errors) => {
+        .catch(async (errors) => {
           // console.log(errors);
           this.error = errors;
+          const reason = await this.readBackupError(errors);
+          EventBus.dispatch("toast", {
+            type: "danger",
+            msg: `Backup failed for "${this.collection.name}": ${reason}`,
+          });
         });
       await this.getAvailableBackups();
       this.loading = false;
+    },
+    /**
+     * Error responses for this endpoint arrive as a Blob because the request uses
+     * responseType: "blob", so the JSON body has to be read out before it can be shown.
+     */
+    async readBackupError(errors) {
+      const data = errors.response && errors.response.data;
+      if (data instanceof Blob) {
+        try {
+          const parsed = JSON.parse(await data.text());
+          return parsed.error || parsed.message || errors.message;
+        } catch (e) {
+          return errors.message;
+        }
+      }
+      return (data && (data.error || data.message)) || errors.message;
     },
     async getBackupFile(file) {
       this.loading = true;
@@ -805,6 +862,7 @@ export default {
     print(value) {
       return JSON.stringify(value, null, 2);
     },
+    normalizeCrawlSchedulerJobInfo,
     upload(file, onUploadProgress) {
       let formData = new FormData();
 

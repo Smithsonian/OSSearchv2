@@ -36,6 +36,7 @@ import org.springframework.stereotype.Service;
 import jakarta.transaction.Transactional;
 import java.io.*;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -139,15 +140,70 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
         return new JSONObject(getJsonString(collectionExport));
     }
 
-    private JSONObject exportCrawlSchedulerJobInfo(String collectionName) throws JsonProcessingException {
-        CrawlSchedulerJobInfo crawlSchedulerJobInfo = crawlSchedulerJobInfoRepository.findByCollectionName(collectionName);
-        if (crawlSchedulerJobInfo != null) {
+    private JSONArray exportCrawlSchedulerJobInfo(String collectionName) throws JsonProcessingException {
+        List<CrawlSchedulerJobInfo> jobs = crawlSchedulerJobInfoRepository.findByCollectionName(collectionName);
+        JSONArray jobsArray = new JSONArray();
+        if (jobs != null) {
             ProjectionFactory crawlProjectionFactory = new SpelAwareProxyProjectionFactory();
-            CrawlSchedulerJobInfoInfoExport crawlSchedulerJobInfoExport = crawlProjectionFactory.createProjection(CrawlSchedulerJobInfoInfoExport.class, crawlSchedulerJobInfo);
-            return new JSONObject(getJsonString(crawlSchedulerJobInfoExport));
-        } else {
-            return new JSONObject();
+            for (CrawlSchedulerJobInfo job : jobs) {
+                CrawlSchedulerJobInfoInfoExport export =
+                    crawlProjectionFactory.createProjection(CrawlSchedulerJobInfoInfoExport.class, job);
+                jobsArray.put(new JSONObject(getJsonString(export)));
+            }
         }
+        return jobsArray;
+    }
+
+    /**
+     * Tomcat's default max response header size is ~8KB, and a large bulk backup (see issue #2,
+     * ~80 collections) could fail that many collections at once, each carrying a full exception
+     * message. Rather than put every failure's full detail in the header, cap it to a total count
+     * plus the first few collection names/ids - the full detail for every failure is already
+     * written to an "_ERROR.json" entry per collection inside the zip itself.
+     */
+    private static final int MAX_BACKUP_ERROR_HEADER_ENTRIES = 10;
+    private static final int MAX_BACKUP_ERROR_HEADER_BYTES = 6000;
+
+    private String buildBackupErrorsHeader(JSONArray backupErrors) {
+        JSONObject summary = new JSONObject();
+        summary.put("count", backupErrors.length());
+
+        JSONArray names = new JSONArray();
+        int limit = Math.min(backupErrors.length(), MAX_BACKUP_ERROR_HEADER_ENTRIES);
+        for (int i = 0; i < limit; i++) {
+            JSONObject failure = backupErrors.getJSONObject(i);
+            names.put(new JSONObject()
+                    .put("collectionId", failure.opt("collectionId"))
+                    .put("collectionName", failure.opt("collectionName")));
+        }
+        summary.put("failed", names);
+        summary.put("truncated", backupErrors.length() > limit);
+
+        // Header values must be single-line ASCII, so encode the JSON payload.
+        // URLEncoder implements application/x-www-form-urlencoded (space -> "+"), but the
+        // frontend decodes with decodeURIComponent (RFC 3986, space -> "%20", "+" left as-is),
+        // so "+" has to be swapped for "%20" to match what the client expects.
+        String encoded = URLEncoder.encode(summary.toString(), StandardCharsets.UTF_8).replace("+", "%20");
+
+        // Defensive hard cap in case collection names alone are unexpectedly long - drop entries
+        // one at a time rather than fail the whole response over a header that's just a summary.
+        while (encoded.getBytes(StandardCharsets.UTF_8).length > MAX_BACKUP_ERROR_HEADER_BYTES && names.length() > 0) {
+            names.remove(names.length() - 1);
+            summary.put("failed", names);
+            summary.put("truncated", true);
+            encoded = URLEncoder.encode(summary.toString(), StandardCharsets.UTF_8).replace("+", "%20");
+        }
+
+        return encoded;
+    }
+
+    private void writeZipEntry(ZipOutputStream zipOut, String filename, String content) throws IOException {
+        byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
+        ZipEntry entry = new ZipEntry(filename);
+        entry.setSize(bytes.length);
+        zipOut.putNextEntry(entry);
+        zipOut.write(bytes);
+        zipOut.closeEntry();
     }
 
     private void saveLocalBackup(String collectionDir, JSONObject json) throws IOException {
@@ -193,8 +249,8 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
                 JSONObject collectionStatus = new JSONObject();
                 restoreStatus.put("collection", collectionStatus);
 
-                JSONObject crawlSchedulerJobInfoStatus = new JSONObject();
-                restoreStatus.put("crawlSchedulerJobInfo", crawlSchedulerJobInfoStatus);
+                JSONArray crawlSchedulerJobInfoStatuses = new JSONArray();
+                restoreStatus.put("crawlSchedulerJobInfo", crawlSchedulerJobInfoStatuses);
 
                 message.put(restoreStatus);
 
@@ -220,19 +276,32 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
                         //throw new OSSearchException("Failed to restore collection from file " + file.get("filename"), e);
                     }
 
-                    try {
-                        if (json.has("crawlSchedulerJobInfo") && !json.getJSONObject("crawlSchedulerJobInfo").isEmpty()) {
-                            JSONObject crawlSchedulerJobInfoJson = json.getJSONObject("crawlSchedulerJobInfo");
-                            restoreCrawlSchedulerJobInfo(collectionStatus.getLong("id"), crawlSchedulerJobInfoJson, crawlSchedulerJobInfoStatus);
-                        } else {
-                            crawlSchedulerJobInfoStatus.put("status", "N/A");
+                    Object raw = json.opt("crawlSchedulerJobInfo");
+                    List<JSONObject> jobJsons = new ArrayList<>();
+
+                    if (raw instanceof JSONArray) {
+                        JSONArray arr = (JSONArray) raw;
+                        for (int i = 0; i< arr.length(); i++) {
+                            jobJsons.add(arr.getJSONObject(i));
                         }
-                    } catch (Exception e) {
-                        log.error("Fail to restore crawlSchedulerJobInfo from file! {}", file.get("filename"), e);
-                        crawlSchedulerJobInfoStatus.put("status", "failed");
-                        crawlSchedulerJobInfoStatus.append("error", e.getMessage());
+                    } else if (raw instanceof JSONObject && !((JSONObject) raw).isEmpty()) {
+                        jobJsons.add((JSONObject) raw);
                     }
 
+                    for (JSONObject jobJson : jobJsons) {
+                        JSONObject jobStatus = new JSONObject();
+                        jobStatus.put("jobName", jobJson.optString("jobName"));
+                        jobStatus.put("jobGroup", jobJson.optString("jobGroup"));
+                        crawlSchedulerJobInfoStatuses.put(jobStatus);
+
+                        try {
+                            restoreCrawlSchedulerJobInfo(collectionStatus.getLong("id"), jobJson, jobStatus);
+                        } catch (Exception e) {
+                            log.error("Fail to restore crawlSchedulerJobInfo from file! {}", file.get("filename"), e);
+                            jobStatus.put("status", "failed");
+                            jobStatus.append("error", e.getMessage());
+                        }
+                    }
                 } catch (Exception e) {
                     restoreStatus.put("status", "failed");
                     restoreStatus.append("error", e.getMessage());
@@ -252,30 +321,32 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
         String zipFilename = "ossearch_bulk_collections_backup_" + new SimpleDateFormat("yyyy-MM-dd'T'HH-mm-ss").format(new Date()) + ".zip";
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
 
+        // Collections that failed to back up, reported to the client via the X-Backup-Errors response header.
+        JSONArray backupErrors = new JSONArray();
+
             try(ZipOutputStream zipOut = new ZipOutputStream(baos)) {
 
                 for (Long id : ids) {
+
+                    String timestamp = new SimpleDateFormat("yyyy-MM-dd'T'HH-mm-ss").format(new Date());
                     Optional<String> collectionName = collectionRepository.findCollectionById(id);
+                    String name = collectionName.orElse("unknown");
 
-                    if (collectionName.isPresent()) {
+                    // Back up each collection independently so one failure does not abort the whole zip.
+                    try {
 
-                        String filePrefix = collectionName.get() + "_" + id + "_backup";
-                        String filename = filePrefix + "_" + new SimpleDateFormat("yyyy-MM-dd'T'HH-mm-ss").format(new Date()) + ".json";
+                        if (collectionName.isEmpty()) {
+                            throw new IllegalArgumentException("Collection not found for id " + id + "!");
+                        }
 
                         JSONObject json = new JSONObject();
 
                         json.put("collection", exportCollection(id));
 
-                        collectionName = Optional.ofNullable(json.getJSONObject("collection").getString("name"));
+                        name = json.getJSONObject("collection").getString("name");
 
                         if (withCrawlSchedule) {
-                            /*JSONObject crawlSchedulerJobInfo = exportCrawlSchedulerJobInfo(collectionName.get());
-                            if (crawlSchedulerJobInfo.isEmpty()) {
-                                json.put("crawlSchedulerJobInfo", "no crawl schedule available");
-                            } else {
-                                json.put("crawlSchedulerJobInfo", crawlSchedulerJobInfo);
-                            }*/
-                            json.put("crawlSchedulerJobInfo", exportCrawlSchedulerJobInfo(collectionName.get()));
+                            json.put("crawlSchedulerJobInfo", exportCrawlSchedulerJobInfo(name));
                         }
 
                         if (!includeUsers) {
@@ -283,34 +354,47 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
                             json.getJSONObject("collection").remove("users");
                         }
 
-                        saveLocalBackup(collectionName.get() + "_" + id, json);
+                        saveLocalBackup(name + "_" + id, json);
 
-                        byte[] bytes = json.toString(4).getBytes(StandardCharsets.UTF_8);
+                        writeZipEntry(zipOut, name + "_" + id + "_backup_" + timestamp + ".json", json.toString(4));
 
-                        ZipEntry entry = new ZipEntry(filename);
-                        entry.setSize(bytes.length);
-                        zipOut.putNextEntry(entry);
-                        zipOut.write(bytes);
-                        zipOut.closeEntry();
+                    } catch (Exception e) {
+                        log.error("There was an error with the Backup of collection id: {}, name: {}", id, name, e);
 
-                    } else {
-                        return ResponseEntity.status(HttpStatus.NOT_FOUND).body("Bulk Backup Error! Collection not found!");
+                        JSONObject errorJson = new JSONObject();
+                        errorJson.put("collectionId", id);
+                        errorJson.put("collectionName", name);
+                        errorJson.put("status", "failed");
+                        errorJson.put("error", e.getMessage());
+                        errorJson.put("errorType", e.getClass().getName());
+                        errorJson.put("timestamp", timestamp);
+
+                        writeZipEntry(zipOut, name + "_" + id + "_backup_" + timestamp + "_ERROR.json", errorJson.toString(4));
+
+                        backupErrors.put(new JSONObject()
+                                .put("collectionId", id)
+                                .put("collectionName", name)
+                                .put("error", String.valueOf(e.getMessage())));
                     }
-
                 }
 
                 zipOut.finish();
-                zipOut.close();
 
             } catch (Exception e) {
                 log.error("Problem with bulk backup!", e);
                 return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Problem with bulk backup! Error: " + e.getMessage());
             }
 
-        return ResponseEntity.ok()
+        ResponseEntity.BodyBuilder response = ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=" + zipFilename)
-                .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                .body(baos.toByteArray());
+                .contentType(MediaType.APPLICATION_OCTET_STREAM);
+
+        if (!backupErrors.isEmpty()) {
+            log.warn("Bulk backup completed with {} failed collection(s): {}", backupErrors.length(), backupErrors);
+            response.header("X-Backup-Errors", buildBackupErrorsHeader(backupErrors));
+        }
+
+        return response.body(baos.toByteArray());
     }
 
     @Override
@@ -452,6 +536,18 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
         String jobName = crawlSchedulerJobInfo.getJobName();
         String jobGroup = crawlSchedulerJobInfo.getJobGroup();
 
+        // One-time/ad-hoc jobs (custom crawls, ADD_URLS, CRAWL_NOW, etc.) use a non-cron SimpleTrigger
+        // with a fixed startTime. jobType isn't a reliable signal here - it gets reset to
+        // SCHEDULED_CRAWL after every run - but a non-cron job whose startTime has already passed
+        // will misfire and re-run immediately under Quartz's default misfire policy if re-scheduled.
+        // Skip re-scheduling these; the job's own status/config is still visible in the backup file.
+        if (!crawlSchedulerJobInfo.isCronJob()) {
+            log.warn("Skipping restore of one-time/ad-hoc crawl schedule job: {} (group: {}) - not re-scheduled to avoid re-firing a stale crawl.", jobName, jobGroup);
+            crawlSchedulerJobInfoStatus.put("status", "skipped");
+            crawlSchedulerJobInfoStatus.put("reason", "One-time/ad-hoc job - not re-scheduled on restore to avoid re-firing a stale crawl.");
+            return;
+        }
+
         Optional<Long> schedulerJobInfoId = crawlSchedulerJobInfoRepository.findIdByJobNameAndJobGroup(jobName, jobGroup);
 
         if (schedulerJobInfoId.isPresent()) {
@@ -467,7 +563,8 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
             crawlSchedulerJobInfoStatus.put("status",  status ? "updated" : "failed");
         }
 
-        if (crawlSchedulerJobInfo.getJobStatus().contains("PAUSED")) {
+        String jobStatus = crawlSchedulerJobInfo.getJobStatus();
+        if (jobStatus != null && jobStatus.contains("PAUSED")) {
             status = jobService.pauseJob(jobName, jobGroup);
             crawlSchedulerJobInfoStatus.put("state", status ? "paused crawl schedule" : "failed to pause crawl schedule");
         }

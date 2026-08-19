@@ -73,12 +73,36 @@ public class BackUpRestoreController {
                     return ResponseEntity.ok(backupRestoreService.collectionListBackupsAvailable(collectionDir));
                 }
             } catch (Exception e) {
-                log.error("Problem with backups for collection {}!", collectionName, e);
-                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Problem with backups for collection " + collectionName);
+                log.error("Problem with backups for collection id: {}, name: {}!", id, collectionName.get(), e);
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body(backupError(id, collectionName.get(),
+                                "Problem with backup for collection " + collectionName.get() + "!", e));
             }
         } else {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).body("Backup Error! Collection not found!");
+            log.error("Backup Error! Collection not found for id: {}!", id);
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(backupError(id, null, "Backup Error! Collection not found!", null));
         }
+    }
+
+    /**
+     * Structured error body so the client can surface the real reason a backup failed.
+     * The backup endpoints stream binary/JSON attachments, so callers read the response as a
+     * Blob and need a parseable body rather than a plain string.
+     */
+    private Map<String, Object> backupError(Long id, String collectionName, String message, Exception e) {
+        Map<String, Object> error = new LinkedHashMap<>();
+        error.put("collectionId", id);
+        error.put("collectionName", collectionName);
+        error.put("status", "failed");
+        error.put("message", message);
+        if (e != null) {
+            error.put("error", String.valueOf(e.getMessage()));
+            error.put("errorType", e.getClass().getName());
+        }
+        return error;
     }
 
     @GetMapping(value = "/backup/collection/{collectionDir}/{filename}")
