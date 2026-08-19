@@ -292,8 +292,8 @@
       <h3>Collection Details</h3>
       <pre>{{ print(backupFileForView?.data?.collection) }}</pre>
       <h3>CrawlSchedulerJobInfo Details</h3>
-      <pre v-if="backupFileForView?.data?.crawlSchedulerJobInfo.length">
-        <div v-for="job in backupFileForView?.data?.crawlSchedulerJobInfo" :key="job.jobName + '_' + job.jobGroup">
+      <pre v-if="normalizeCrawlSchedulerJobInfo(backupFileForView?.data?.crawlSchedulerJobInfo).length">
+        <div v-for="job in normalizeCrawlSchedulerJobInfo(backupFileForView?.data?.crawlSchedulerJobInfo)" :key="job.jobName + '_' + job.jobGroup">
           {{print(job)}}
         </div>
       </pre>
@@ -620,6 +620,7 @@
 <script>
 import Modal from "../../../components/Modal";
 import EventBus from "../../../common/EventBus";
+import { normalizeCrawlSchedulerJobInfo } from "../../../common/backupRestoreUtils";
 import CollectionService from "../../../services/collection.service";
 import api from "@/services/api";
 import Datatable from "../../../components/table/Datatable.vue";
@@ -861,6 +862,7 @@ export default {
     print(value) {
       return JSON.stringify(value, null, 2);
     },
+    normalizeCrawlSchedulerJobInfo,
     upload(file, onUploadProgress) {
       let formData = new FormData();
 

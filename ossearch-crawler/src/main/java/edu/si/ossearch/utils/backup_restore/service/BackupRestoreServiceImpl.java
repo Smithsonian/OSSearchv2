@@ -19,7 +19,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.yarn.webapp.hamlet2.Hamlet.P;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -153,6 +152,49 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
             }
         }
         return jobsArray;
+    }
+
+    /**
+     * Tomcat's default max response header size is ~8KB, and a large bulk backup (see issue #2,
+     * ~80 collections) could fail that many collections at once, each carrying a full exception
+     * message. Rather than put every failure's full detail in the header, cap it to a total count
+     * plus the first few collection names/ids - the full detail for every failure is already
+     * written to an "_ERROR.json" entry per collection inside the zip itself.
+     */
+    private static final int MAX_BACKUP_ERROR_HEADER_ENTRIES = 10;
+    private static final int MAX_BACKUP_ERROR_HEADER_BYTES = 6000;
+
+    private String buildBackupErrorsHeader(JSONArray backupErrors) {
+        JSONObject summary = new JSONObject();
+        summary.put("count", backupErrors.length());
+
+        JSONArray names = new JSONArray();
+        int limit = Math.min(backupErrors.length(), MAX_BACKUP_ERROR_HEADER_ENTRIES);
+        for (int i = 0; i < limit; i++) {
+            JSONObject failure = backupErrors.getJSONObject(i);
+            names.put(new JSONObject()
+                    .put("collectionId", failure.opt("collectionId"))
+                    .put("collectionName", failure.opt("collectionName")));
+        }
+        summary.put("failed", names);
+        summary.put("truncated", backupErrors.length() > limit);
+
+        // Header values must be single-line ASCII, so encode the JSON payload.
+        // URLEncoder implements application/x-www-form-urlencoded (space -> "+"), but the
+        // frontend decodes with decodeURIComponent (RFC 3986, space -> "%20", "+" left as-is),
+        // so "+" has to be swapped for "%20" to match what the client expects.
+        String encoded = URLEncoder.encode(summary.toString(), StandardCharsets.UTF_8).replace("+", "%20");
+
+        // Defensive hard cap in case collection names alone are unexpectedly long - drop entries
+        // one at a time rather than fail the whole response over a header that's just a summary.
+        while (encoded.getBytes(StandardCharsets.UTF_8).length > MAX_BACKUP_ERROR_HEADER_BYTES && names.length() > 0) {
+            names.remove(names.length() - 1);
+            summary.put("failed", names);
+            summary.put("truncated", true);
+            encoded = URLEncoder.encode(summary.toString(), StandardCharsets.UTF_8).replace("+", "%20");
+        }
+
+        return encoded;
     }
 
     private void writeZipEntry(ZipOutputStream zipOut, String filename, String content) throws IOException {
@@ -349,8 +391,7 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
 
         if (!backupErrors.isEmpty()) {
             log.warn("Bulk backup completed with {} failed collection(s): {}", backupErrors.length(), backupErrors);
-            // Header values must be single-line ASCII, so encode the JSON payload.
-            response.header("X-Backup-Errors", URLEncoder.encode(backupErrors.toString(), StandardCharsets.UTF_8));
+            response.header("X-Backup-Errors", buildBackupErrorsHeader(backupErrors));
         }
 
         return response.body(baos.toByteArray());
@@ -494,6 +535,18 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
 
         String jobName = crawlSchedulerJobInfo.getJobName();
         String jobGroup = crawlSchedulerJobInfo.getJobGroup();
+
+        // One-time/ad-hoc jobs (custom crawls, ADD_URLS, CRAWL_NOW, etc.) use a non-cron SimpleTrigger
+        // with a fixed startTime. jobType isn't a reliable signal here - it gets reset to
+        // SCHEDULED_CRAWL after every run - but a non-cron job whose startTime has already passed
+        // will misfire and re-run immediately under Quartz's default misfire policy if re-scheduled.
+        // Skip re-scheduling these; the job's own status/config is still visible in the backup file.
+        if (!crawlSchedulerJobInfo.isCronJob()) {
+            log.warn("Skipping restore of one-time/ad-hoc crawl schedule job: {} (group: {}) - not re-scheduled to avoid re-firing a stale crawl.", jobName, jobGroup);
+            crawlSchedulerJobInfoStatus.put("status", "skipped");
+            crawlSchedulerJobInfoStatus.put("reason", "One-time/ad-hoc job - not re-scheduled on restore to avoid re-firing a stale crawl.");
+            return;
+        }
 
         Optional<Long> schedulerJobInfoId = crawlSchedulerJobInfoRepository.findIdByJobNameAndJobGroup(jobName, jobGroup);
 

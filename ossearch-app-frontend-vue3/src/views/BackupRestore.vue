@@ -427,9 +427,11 @@
       <h3>Collection Details</h3>
       <pre>{{ print(backupFileForView?.data?.collection) }}</pre>
       <h3>CrawlSchedulerJobInfo Details</h3>
-      <pre v-if="backupFileForView?.data?.crawlSchedulerJobInfo">{{
-        print(backupFileForView?.data?.crawlSchedulerJobInfo)
-      }}</pre>
+      <pre v-if="normalizeCrawlSchedulerJobInfo(backupFileForView?.data?.crawlSchedulerJobInfo).length">
+        <div v-for="job in normalizeCrawlSchedulerJobInfo(backupFileForView?.data?.crawlSchedulerJobInfo)" :key="job.jobName + '_' + job.jobGroup">
+          {{ print(job) }}
+        </div>
+      </pre>
       <p v-else>No Crawl Scheduler Job Info Available</p>
     </template>
     <template v-slot:footer>
@@ -566,6 +568,7 @@
 <script>
 import Breadcrumb from "../components/Breadcrumb.vue";
 import EventBus from "../common/EventBus";
+import { normalizeCrawlSchedulerJobInfo } from "../common/backupRestoreUtils";
 import CollectionService from "../services/collection.service";
 import DualListBox from "../components/DualListBox.vue";
 import api from "../services/api";
@@ -790,9 +793,12 @@ export default {
         return;
       }
 
-      let failed = [];
+      // The header is a capped summary ({ count, failed: [{collectionId, collectionName}], truncated }),
+      // not the full error detail - that's written to an _ERROR.json entry per collection in the zip,
+      // so a large bulk backup (many failures) can't blow past the response header size limit.
+      let summary;
       try {
-        failed = JSON.parse(decodeURIComponent(errorHeader));
+        summary = JSON.parse(decodeURIComponent(errorHeader));
       } catch (e) {
         EventBus.dispatch("toast", {
           type: "danger",
@@ -801,18 +807,22 @@ export default {
         return;
       }
 
+      const failed = summary.failed || [];
       this.backupErrors = failed;
 
       failed.forEach((f) => {
         EventBus.dispatch("toast", {
           type: "danger",
-          msg: `Backup failed for "${f.collectionName}" (id ${f.collectionId}): ${f.error}`,
+          msg: `Backup failed for "${f.collectionName}" (id ${f.collectionId}). See the _ERROR.json file in the downloaded zip for details.`,
         });
       });
 
+      const shown = summary.truncated
+        ? ` (showing first ${failed.length})`
+        : "";
       EventBus.dispatch("toast", {
         type: "warning",
-        msg: `${failed.length} of ${this.collectionsToBackup.length} collection backup(s) failed. An _ERROR.json file was added to the zip for each.`,
+        msg: `${summary.count} of ${this.collectionsToBackup.length} collection backup(s) failed${shown}. An _ERROR.json file was added to the zip for each.`,
       });
     },
     async getAvailableBackups() {
@@ -910,6 +920,7 @@ export default {
     print(value) {
       return JSON.stringify(value, null, 2);
     },
+    normalizeCrawlSchedulerJobInfo,
     async getBackupFile(fileinfo) {
       let name = Object.keys(fileinfo)[0];
       let filename = fileinfo[Object.keys(fileinfo)[0]].name;
