@@ -94,6 +94,13 @@
             <span class="sr-only">Loading...</span>
           </div>
         </div>
+        <div v-else-if="availableBackupsError" class="alert alert-danger">
+          <i class="fas fa-exclamation-triangle me-1"></i>
+          {{ availableBackupsError }}
+          <button class="btn btn-sm btn-outline-danger ms-2" @click="getAvailableBackups()">
+            Retry
+          </button>
+        </div>
         <div v-else class="row">
           <div class="col-5">
             <h5>System Backups Available</h5>
@@ -564,6 +571,7 @@ export default {
     return {
       loading: false,
       backingup: false,
+      availableBackupsError: null,
       error: null,
       collections: [],
       collectionsAvailable: [],
@@ -723,15 +731,41 @@ export default {
           document.body.appendChild(docUrl);
           docUrl.click();
         })
-        .catch((errors) => {
+        .catch(async (errors) => {
           // console.log(errors);
           this.error = errors;
+          const reason = await this.readBlobError(errors);
+          EventBus.dispatch("toast", {
+            type: "danger",
+            msg: `Bulk backup failed: ${reason}`,
+          });
         });
 
       await this.getAvailableBackups();
       this.backingup = false;
     },
+    /**
+     * Requests that use responseType: "blob" (to download a file on success) also receive
+     * error bodies as a Blob, so the server's JSON error message has to be read out of it
+     * manually before it can be shown to the user.
+     */
+    async readBlobError(errors) {
+      const data = errors.response && errors.response.data;
+      if (data instanceof Blob) {
+        try {
+          const parsed = JSON.parse(await data.text());
+          return parsed.message || parsed.error || errors.message;
+        } catch (e) {
+          return errors.message;
+        }
+      }
+      return (data && (data.message || data.error)) || errors.message;
+    },
     async getAvailableBackups() {
+      this.availableBackupsError = null;
+      this.treeDisplayData[0].children = [];
+
+
       await api
         .get("/utils/backup/collection/bulk", {
           params: { listAvailableBackups: "true" },
@@ -774,6 +808,10 @@ export default {
         .catch((errors) => {
           // console.log(errors);
           this.error = errors;
+          this.availableBackupsError =
+            errors.response?.data?.message ||
+            errors.message ||
+            "Failed to load available backups.";
         });
     },
     async restoreLocalBackup() {

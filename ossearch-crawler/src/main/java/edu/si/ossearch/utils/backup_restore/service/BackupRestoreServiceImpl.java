@@ -334,18 +334,33 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
             return answer;
         }).collect(Collectors.toList());*/
 
-        List<Map<String, List<Map<String, String>>>> result = Stream.of(crawlDir.listFiles())
-                .filter(file -> file.isDirectory())
-                .map(collectionDir -> {
-                    Map<String, List<Map<String, String>>> answer = new HashMap<>();
-                    List<Map<String, String>> collectionBackupsAvailable = collectionListBackupsAvailable(collectionDir.getName());
-                    //String collectionName = StringUtils.substringBeforeLast(collectionDir.getName(), "_");
-                    answer.put(collectionDir.getName(), collectionBackupsAvailable);
-                    return answer;
-                })
-                .collect(Collectors.toList());
+        try {
+            File[] files = crawlDir.listFiles();
+            if (files == null) {
+                return ResponseEntity.ok(Collections.emptyList());
+            }
 
-        return ResponseEntity.ok(result);
+            List<Map<String, List<Map<String, String>>>> result = Stream.of(files)
+                    .filter(file -> file.isDirectory())
+                    .map(collectionDir -> {
+                        Map<String, List<Map<String, String>>> answer = new HashMap<>();
+                        List<Map<String, String>> collectionBackupsAvailable = collectionListBackupsAvailable(collectionDir.getName());
+                        //String collectionName = StringUtils.substringBeforeLast(collectionDir.getName(), "_");
+                        answer.put(collectionDir.getName(), collectionBackupsAvailable);
+                        return answer;
+                    })
+                    .collect(Collectors.toList());
+
+            return ResponseEntity.ok(result);
+
+        } catch (Exception e) {
+            log.error("Problem with loading backups!", e);
+            Map<String, Object> error = new LinkedHashMap<>();
+            error.put("message", "Problem with loading backups! Error: " + e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(error);
+        }
     }
 
     @Override
