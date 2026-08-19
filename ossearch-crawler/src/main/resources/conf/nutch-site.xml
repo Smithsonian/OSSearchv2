@@ -326,6 +326,90 @@
         </description>
     </property>
 
+    <property>
+        <name>mapreduce.task.io.sort.mb</name>
+        <value>512</value>
+        <description>
+            Hadoop property (not a Nutch property): the size, in megabytes, of the
+            in-memory buffer used while sorting map output. Hadoop default is 100.
+            The sort-heavy crawl steps (updatedb, dedup, invertlinks) spill to disk
+            and merge far less with a larger buffer. Each concurrently running map
+            task allocates its own buffer, so JVM heap must accommodate
+            (buffer size x parallel local map tasks).
+        </description>
+    </property>
+
+    <property>
+        <name>mapreduce.task.io.sort.factor</name>
+        <value>64</value>
+        <description>
+            Hadoop property (not a Nutch property): the number of spill file streams
+            merged at once when sorting map output or merging reduce inputs. Hadoop
+            default is 10. A higher value reduces the number of merge passes for
+            large sorts (e.g. crawldb updates).
+        </description>
+    </property>
+
+    <property>
+        <name>mapreduce.local.map.tasks.maximum</name>
+        <value>4</value>
+        <description>
+            Hadoop property (not a Nutch property): maximum number of map tasks
+            the LocalJobRunner executes in parallel PER JOB. Hadoop's default is 1,
+            which serializes every map task onto a single core. Applies to all
+            crawl steps EXCEPT the index step, where the crawler forces this to 1
+            because concurrent indexing maps caused Solr commit failures.
+            Each concurrently running map allocates its own sort buffer
+            (mapreduce.task.io.sort.mb), so JVM heap must accommodate
+            (sort buffer x this value x concurrent crawls).
+        </description>
+    </property>
+
+    <property>
+        <name>mapreduce.local.reduce.tasks.maximum</name>
+        <value>2</value>
+        <description>
+            Hadoop property (not a Nutch property): maximum number of reduce tasks
+            the LocalJobRunner executes in parallel. Hadoop's default is 1.
+            Applies to all crawl steps EXCEPT the index step, where the crawler
+            forces this to 1 (see mapreduce.local.map.tasks.maximum). Each
+            concurrent reduce buffers shuffle data in the shared JVM heap
+            (see mapreduce.reduce.shuffle.input.buffer.percent) - lower this
+            value if crawl steps fail under memory pressure.
+        </description>
+    </property>
+
+    <property>
+        <name>mapreduce.reduce.shuffle.input.buffer.percent</name>
+        <value>0.02</value>
+        <description>
+            Hadoop property (not a Nutch property): fraction of JVM heap EACH
+            reduce task may use to buffer shuffled map output. Hadoop's default
+            is 0.70, which assumes one reduce per JVM. OSSearch runs ALL crawls
+            as LocalJobRunner jobs inside ONE JVM shared with the Spring Boot
+            application, so the worst case is
+            (concurrent crawls x mapreduce.local.reduce.tasks.maximum x this value)
+            of the heap. 0.70 exhausted memory on a single large shuffle
+            (observed: linkdb invert of a 13k-page segment killed the job).
+            At 0.02 with 2 reduces per job, 10 concurrent crawls budget at most
+            40% of the heap; excess shuffle data spills to disk, which is cheap
+            on local SSD storage (keep hadoop.tmp.dir OFF NFS).
+        </description>
+    </property>
+
+    <property>
+        <name>mapreduce.map.output.compress.codec</name>
+        <value>org.apache.hadoop.io.compress.SnappyCodec</value>
+        <description>
+            Hadoop property (not a Nutch property): the compression codec for
+            intermediate map output (mapreduce.map.output.compress is enabled by the
+            crawler). Hadoop's default DefaultCodec (zlib) is CPU-expensive; Snappy
+            is much faster and runs pure-Java via the snappy-java library bundled on
+            the classpath (Hadoop 3.3.1+), so no native Hadoop libraries are needed.
+            Do NOT use Lz4Codec: lz4-java is not on the classpath.
+        </description>
+    </property>
+
     <!-- Additional Changes to Nutch 1.x defaults during Testing -->
     <!--<property>
         <name>db.fetch.retry.max</name>
