@@ -121,19 +121,6 @@ export default {
       }
     }
   },
-  watch: {
-    error: {
-      deep: true,
-      handler: function () {
-        //let content = (this.error.response && this.error.response.data && this.error.response.data.message) || this.error.message || this.error.toString();
-        if (this.error.response && this.error.response.status === 403) {
-          EventBus.dispatch("logout");
-        } else {
-          alert("ERROR: " + this.error.response.data)
-        }
-      }
-    }
-  },
   methods: {
     async addUrls(crawl) {
       let body = this.urls;

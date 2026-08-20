@@ -630,17 +630,6 @@ export default {
     await this.fetchData()
   },
   watch: {
-    error: {
-      deep: true,
-      handler: function () {
-        let content = (this.error.response && this.error.response.data && this.error.response.data.message) || this.error.message || this.error.toString();
-        if (this.error.response && this.error.response.status === 403) {
-          EventBus.dispatch("logout");
-        } else {
-          alert("ERROR: " + content)
-        }
-      }
-    },
     jobData: {
       deep: true,
       handler: function () {

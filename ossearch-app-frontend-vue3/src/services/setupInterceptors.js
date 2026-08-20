@@ -1,6 +1,7 @@
 import axiosInstance from "./api";
 import TokenService from "./token.service";
 import EventBus from "../common/EventBus";
+import apiErrorToast from "../common/apiErrorToast";
 import router from '../router';
 
 const setup = (store) => {
@@ -50,6 +51,10 @@ const setup = (store) => {
                 }
             }
 
+            // Global user-facing notification for failed requests (403,
+            // network, 5xx, ...). Components no longer alert/logout in
+            // per-component error watchers.
+            apiErrorToast(err);
             return Promise.reject(err);
         }
     );

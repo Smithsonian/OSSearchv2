@@ -207,7 +207,6 @@ import Breadcrumb from "../../components/Breadcrumb";
 import CollectionService from "../../services/collection.service";
 import TokenService from "../../services/token.service";
 import UserService from "../../services/user.service";
-import EventBus from "../../common/EventBus";
 
 export default {
   name: "CollectionForm",
@@ -271,19 +270,6 @@ export default {
       isEditManagers: true,
       toggleModal: false,
       createdCollectionLink: null
-    }
-  },
-  watch: {
-    error: {
-      deep: true,
-      handler: function () {
-        let content = (this.error.response && this.error.response.data && this.error.response.data.message) || this.error.message || this.error.toString();
-        if (this.error.response && this.error.response.status === 403) {
-          EventBus.dispatch("logout");
-        } else {
-          alert("ERROR: " + content)
-        }
-      }
     }
   },
   // watch: {

@@ -362,19 +362,6 @@ export default {
   async mounted() {
     this.testpreview = await this.highlighter(beautify.html_beautify('<GSP VER="3.2"><Q>test</Q><PARAM name="q" value="test" original_value="test"/><PARAM name="site" value="aaa_v2" original_value="aaa_v2"/><PARAM name="output" value="xml" original_value="xml" url_escaped_value="xml" js_escaped_value="xml"/><PARAM name="proxyreload" value="0" original_value="0"/><PARAM name="oe" value="UTF-8" original_value="UTF-8" url_escaped_value="UTF-8" js_escaped_value="UTF-8"/><PARAM name="ie" value="UTF-8" original_value="UTF-8" url_escaped_value="UTF-8" js_escaped_value="UTF-8"/><PARAM name="ip" value="160.111.100.68" original_value="160.111.100.68"/></GSP>'))
   },
-  watch: {
-    error: {
-      deep: true,
-      handler: function () {
-        let content = (this.error.response && this.error.response.data && this.error.response.data.message) || this.error.message || this.error.toString();
-        if (this.error.response && this.error.response.status === 403) {
-          EventBus.dispatch("logout");
-        } else {
-          alert("ERROR: " + content)
-        }
-      }
-    }
-  },
   computed: {
     isValid() {
       this.setValidationMsg(null);

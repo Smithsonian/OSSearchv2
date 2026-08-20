@@ -24,7 +24,6 @@
 import CollectionService from "../../services/collection.service";
 import Breadcrumb from "../../components/Breadcrumb";
 import NavTabs from "../../components/navtab/NavTabs";
-import EventBus from "../../common/EventBus";
 
 export default {
   name: "Collection",
@@ -114,19 +113,6 @@ export default {
   },
   async mounted() {
     await this.fetchData()
-  },
-  watch: {
-    error: {
-      deep: true,
-      handler: function () {
-        let content = (this.error.response && this.error.response.data && this.error.response.data.message) || this.error.message || this.error.toString();
-        if (this.error.response && this.error.response.status === 403) {
-          EventBus.dispatch("logout");
-        } else {
-          alert("ERROR: " + content)
-        }
-      }
-    },
   },
   methods: {
     async fetchData() {

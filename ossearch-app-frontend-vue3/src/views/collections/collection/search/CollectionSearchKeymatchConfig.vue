@@ -67,7 +67,6 @@
 
 <script>
 import Keymatch from "@/components/collections/Keymatch";
-import EventBus from "@/common/EventBus";
 
 export default {
   name: 'CollectionSearchKeymatchConfig',
@@ -109,23 +108,9 @@ export default {
       console.log('Keymatches updated:', newKeymatches);
     },
     handleError(error) {
+      // Failed API requests are surfaced globally as toasts by the axios
+      // interceptor; only track local state here.
       this.error = error;
-      const content = (error.response && error.response.data && error.response.data.message) || error.message || error.toString();
-      if (error.response && error.response.status === 403) {
-        EventBus.dispatch("logout");
-      } else {
-        alert("ERROR: " + content);
-      }
-    }
-  },
-  watch: {
-    error: {
-      handler: function(newError) {
-        if (newError) {
-          this.handleError(newError);
-        }
-      },
-      deep: true
     }
   }
 }
