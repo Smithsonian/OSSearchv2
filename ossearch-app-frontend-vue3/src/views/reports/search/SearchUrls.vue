@@ -114,7 +114,7 @@ export default {
     exportBaseUrl() {
       let url = null
       let params = this.getParams()
-      url = new URL(process.env.VUE_APP_API_BASE_URL + '/api/reports/search/allUrls')
+      url = new URL(process.env.VUE_APP_API_BASE_URL + '/api/reports/search/allUrls', window.location.origin)
       url.search = new URLSearchParams(params)
       console.log("export url", url.toString())
       return url
