@@ -76,7 +76,6 @@
 <script>
 import ServerStatusService from "../services/server-status.service"
 import ServiceStatus from "../components/ServiceStatus";
-import EventBus from "../common/EventBus";
 import Datatable from "../components/table/Datatable.vue";
 import UserService from "../services/user.service";
 
@@ -122,12 +121,11 @@ export default {
     error: {
       deep: true,
       handler: function () {
+        // A 403 here must not log the user out: session expiry is handled
+        // globally by the axios interceptor (401 -> refresh -> logout), and
+        // the WAF can 403 individual requests for a still-valid session.
         let content = (this.error.response && this.error.response.data && this.error.response.data.message) || this.error.message || this.error.toString();
-        if (this.error.response && this.error.response.status === 403) {
-          EventBus.dispatch("logout");
-        } else {
-          alert("ERROR: " + content)
-        }
+        alert("ERROR: " + content)
       }
     }
   },
