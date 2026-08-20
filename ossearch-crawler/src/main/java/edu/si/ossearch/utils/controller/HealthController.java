@@ -1,5 +1,6 @@
 package edu.si.ossearch.utils.controller;
 
+import edu.si.ossearch.scheduler.service.SchedulerHeartbeatService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -37,6 +38,9 @@ public class HealthController {
     @Autowired
     HealthEndpoint healthEndpoint;
 
+    @Autowired
+    SchedulerHeartbeatService schedulerHeartbeatService;
+
     @Operation(summary = "Backend health with component details (same JSON shape as /actuator/health)")
     @GetMapping("/health")
     public ResponseEntity<Map<String, Object>> health() {
@@ -47,6 +51,9 @@ public class HealthController {
         // Behind the load balancer each request may land on a different app
         // server; the node name lets the UI say which server it is describing.
         body.put("node", nodeName());
+        // Cluster-wide scheduler liveness from the shared-DB heartbeat, so
+        // the answer is the same no matter which app server responds.
+        body.put("scheduler", schedulerHeartbeatService.status());
         return ResponseEntity.status(httpStatus).body(body);
     }
 

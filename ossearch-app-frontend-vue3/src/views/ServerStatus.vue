@@ -27,10 +27,10 @@
           <ServiceStatus serviceName="Solr Slave"
                          v-bind:serviceStatus="solr_slave"/>
 
-          <div :class="scheduler_status.started ? 'alert-success' : 'alert-danger'"  class="alert d-flex align-items-center" role="alert">
-            <i :class="scheduler_status.started ? 'bi-check-circle-fill' : 'bi-x-circle-fill'"  style="font-size: x-large" class="bi bi-check-circle-fill flex-shrink-0 me-2" aria-label="Success:"></i>
+          <div :class="schedulerAlertClass" class="alert d-flex align-items-center" role="alert">
+            <i :class="schedulerCluster.active && schedulerCluster.activeNodes.length === 1 ? 'bi-check-circle-fill' : 'bi-x-circle-fill'"  style="font-size: x-large" class="bi flex-shrink-0 me-2" aria-label="Scheduler status:"></i>
             <div>
-              Quartz Scheduler running since {{ scheduler_status.runningSince }}
+              {{ schedulerMessage }}<span v-if="scheduler_status.started && scheduler_status.runningSince"> — running since {{ scheduler_status.runningSince }}</span>
             </div>
           </div>
 
@@ -86,6 +86,7 @@ export default {
     return {
       json: '',
       node: '',
+      schedulerCluster: {active: null, activeNodes: []},
       backend_status: '',
       db_status: '',
       schedulerStatus: '',
@@ -112,6 +113,24 @@ export default {
     Datatable,
     ServiceStatus
   },
+  computed: {
+    schedulerAlertClass() {
+      if (this.schedulerCluster.active && this.schedulerCluster.activeNodes.length === 1) {
+        return 'alert-success'
+      }
+      return this.schedulerCluster.active ? 'alert-warning' : 'alert-danger'
+    },
+    schedulerMessage() {
+      const nodes = this.schedulerCluster.activeNodes || []
+      if (nodes.length > 1) {
+        return 'Multiple Quartz schedulers active (misconfiguration — crawls may double-fire): ' + nodes.join(', ')
+      }
+      if (this.schedulerCluster.active) {
+        return 'Quartz Scheduler running on ' + nodes[0]
+      }
+      return 'No Quartz scheduler is running on any server'
+    }
+  },
   async mounted() {
     this.loading = true
     this.getServerStatus()
@@ -137,6 +156,7 @@ export default {
           response => {
             this.json = response.data
             this.node = this.json.node
+            this.schedulerCluster = this.json.scheduler || {active: null, activeNodes: []}
             this.db_status = this.json.components?.db?.status
             this.ldap = this.json.components?.ldap?.status
             this.solr_master = this.json.components?.solr?.details['master.status']
