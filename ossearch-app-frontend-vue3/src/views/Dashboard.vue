@@ -118,7 +118,7 @@
               </div>
             </div>
             <h2 v-if="!loading" class="card-text text-end mt-auto"><i class="fas fa-server float-start"></i><span>{{ systemStatus }}</span></h2>
-            <span v-if="!loading && systemStatus === 'DEGRADED'" class="card-text text-end small">Scheduler not running on {{ healthNode }}</span>
+            <span v-if="!loading && systemStatus === 'DEGRADED'" class="card-text text-end small">{{ schedulerStatusMessage }}</span>
             <!--            <span>Number of Crawls Executed:<span class="float-end">{{ numberOfJobsExecuted }}</span></span>-->
           </div>
           <div class="card-footer d-flex align-items-center justify-content-between">
@@ -284,6 +284,8 @@ export default {
       schedulerStatus: null,
       backedStatus: null,
       healthNode: null,
+      schedulerActive: null,
+      schedulerNodes: [],
       solrCount: 0,
       solrCounts: 0,
       crawlDbStats: null,
@@ -323,13 +325,24 @@ export default {
     },
     systemStatus() {
       // DOWN only when core infrastructure (db/ldap/solr) is unhealthy.
-      // Behind the load balancer the scheduler runs on a single node, so a
-      // "not started" answer from the standby node is expected — show it as
-      // DEGRADED with the reporting node's name instead of a hard DOWN.
+      // Scheduler liveness is cluster-wide (shared-DB heartbeat), so the
+      // answer is identical no matter which app server handled the request.
       if (this.backedStatus !== "UP") {
         return "DOWN"
       }
-      return this.schedulerStatus ? "UP" : "DEGRADED"
+      if (!this.schedulerActive || this.schedulerNodes.length > 1) {
+        return "DEGRADED"
+      }
+      return "UP"
+    },
+    schedulerStatusMessage() {
+      if (this.schedulerNodes.length > 1) {
+        return "Multiple schedulers active: " + this.schedulerNodes.join(", ")
+      }
+      if (!this.schedulerActive) {
+        return "Scheduler is not running on any server"
+      }
+      return "Scheduler running on " + this.schedulerNodes[0]
     },
     systemStatusCardClass() {
       if (this.systemStatus === "UP") {
@@ -404,6 +417,8 @@ export default {
           .then(response => {
             this.backedStatus = response.data.status
             this.healthNode = response.data.node
+            this.schedulerActive = response.data.scheduler?.active === true
+            this.schedulerNodes = response.data.scheduler?.activeNodes || []
           })
           .catch(() => {
             // A failed health probe must never feed the shared `error`
