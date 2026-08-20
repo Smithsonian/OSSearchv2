@@ -243,7 +243,6 @@ import Breadcrumb from "../../components/Breadcrumb";
 import CollectionService from "../../services/collection.service";
 import TokenService from "../../services/token.service";
 import UserService from "../../services/user.service";
-import EventBus from "../../common/EventBus";
 import ImportAddEditCheckTable from "../../components/forms/ImportAddEditCheckTable";
 import SearchConfigurationForm from "../../components/collections/SearchConfigurationForm";
 import CollectionCrawlScheduleForm from "../../components/collections/CollectionCrawlScheduleForm";
@@ -332,17 +331,6 @@ export default {
     }
   },
   watch: {
-    error: {
-      deep: true,
-      handler: function () {
-        let content = (this.error.response && this.error.response.data && this.error.response.data.message) || this.error.message || this.error.toString();
-        if (this.error.response && this.error.response.status === 403) {
-          EventBus.dispatch("logout");
-        } else {
-          alert("ERROR: " + content)
-        }
-      }
-    },
     collection: {
       deep: true,
       handler: function () {

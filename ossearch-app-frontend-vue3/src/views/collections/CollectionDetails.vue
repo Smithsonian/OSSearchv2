@@ -290,7 +290,6 @@ import CollectionManagers from "../../components/collections/CollectionManagers"
 import CollectionCrawlScheduleForm from "../../components/collections/CollectionCrawlScheduleForm";
 import CollectionService from "../../services/collection.service";
 import Modal from "../../components/Modal";
-import EventBus from "../../common/EventBus";
 
 export default {
   name: "CollectionDetails",
@@ -352,19 +351,6 @@ export default {
   //   console.log("collection name:", this.$route.params.name, "id:", this.collection.id)
   //   this.getCollection()
   // },
-  watch: {
-    error: {
-      deep: true,
-      handler: function () {
-        let content = (this.error.response && this.error.response.data && this.error.response.data.message) || this.error.message || this.error.toString();
-        if (this.error.response && this.error.response.status === 403) {
-          EventBus.dispatch("logout");
-        } else {
-          alert("ERROR: " + content)
-        }
-      }
-    }
-  },
   methods: {
     async fetchData() {
       this.loading = true

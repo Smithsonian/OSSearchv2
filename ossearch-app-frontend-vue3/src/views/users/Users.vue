@@ -84,7 +84,6 @@ import UserService from "../../services/user.service";
 import Breadcrumb from "../../components/Breadcrumb";
 import Datatable from "../../components/table/Datatable";
 import Modal from "../../components/Modal";
-import EventBus from "../../common/EventBus";
 
 
 export default {
@@ -120,19 +119,6 @@ export default {
       },
       tableData: [],
       selectedUser: {},
-    }
-  },
-  watch: {
-    error: {
-      deep: true,
-      handler: function () {
-        let content = (this.error.response && this.error.response.data && this.error.response.data.message) || this.error.message || this.error.toString();
-        if (this.error.response && this.error.response.status === 403) {
-          EventBus.dispatch("logout");
-        } else {
-          alert("ERROR: " + content)
-        }
-      }
     }
   },
   methods: {
