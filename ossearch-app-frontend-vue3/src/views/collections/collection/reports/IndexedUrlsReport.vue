@@ -119,7 +119,7 @@ export default {
         let params = this.getParams()
         params.export = true
 
-        url = new URL(process.env.VUE_APP_API_BASE_URL + '/api/reports/solr/' + this.collection.id)
+        url = new URL(process.env.VUE_APP_API_BASE_URL + '/api/reports/solr/' + this.collection.id, window.location.origin)
         url.search = new URLSearchParams(params)
 
         this.sort.forEach(sortParam => {

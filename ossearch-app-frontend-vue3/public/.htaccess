@@ -7,7 +7,27 @@
     RewriteEngine On
     RewriteBase /
     RewriteRule ^index\.html$ - [L]
+    # Never rewrite hashed build assets to index.html: a missing chunk must
+    # return a real 404 instead of HTML (which the browser would try to parse
+    # as JS, causing "Uncaught SyntaxError: Unexpected token '<'").
+    RewriteCond %{REQUEST_URI} !^/static/
     RewriteCond %{REQUEST_FILENAME} !-f
     RewriteCond %{REQUEST_FILENAME} !-d
     RewriteRule . /index.html [L]
+</IfModule>
+
+<IfModule mod_headers.c>
+    # index.html must always be revalidated so browsers never hold a stale
+    # copy referencing hashed chunks that no longer exist on the server.
+    <Files "index.html">
+        Header set Cache-Control "no-cache, must-revalidate"
+    </Files>
+    # Hashed build assets are immutable: a content change produces a new
+    # filename, so these can be cached forever.
+    <FilesMatch "\.(js|css|woff2?|ttf|eot|svg|png|jpe?g|gif|ico)$">
+        Header set Cache-Control "public, max-age=31536000, immutable"
+    </FilesMatch>
+    <Files "favicon.ico">
+        Header set Cache-Control "public, max-age=86400"
+    </Files>
 </IfModule>

@@ -162,7 +162,7 @@ export default {
         params.export = true
 
         // url = new URL(process.env.VUE_APP_API_BASE_URL + '/api/webpage/search/findByWebPagesByCollectionIdReport')
-        url = new URL(process.env.VUE_APP_API_BASE_URL + '/api/reports/crawldb/' + this.collection.id)
+        url = new URL(process.env.VUE_APP_API_BASE_URL + '/api/reports/crawldb/' + this.collection.id, window.location.origin)
         url.search = new URLSearchParams(params)
 
         this.sort.forEach(sortParam => {

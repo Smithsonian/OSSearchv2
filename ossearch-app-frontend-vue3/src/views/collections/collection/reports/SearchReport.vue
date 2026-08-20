@@ -201,7 +201,7 @@ export default {
         delete params.collectionId
         delete params.projection
 
-        url = new URL(process.env.VUE_APP_API_BASE_URL + '/api/reports/search/' + this.collection.id)
+        url = new URL(process.env.VUE_APP_API_BASE_URL + '/api/reports/search/' + this.collection.id, window.location.origin)
         url.search = new URLSearchParams(params)
         console.log("export url", url.toString())
       }
