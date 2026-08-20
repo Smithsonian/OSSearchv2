@@ -1,10 +1,10 @@
 import api from "./api"
 
-import axios from "axios";
-
 class ServerStatusService {
     getServerStatus() {
-        return axios.get(process.env.VUE_APP_API_BASE_URL+'/actuator/health', {
+        // Authenticated /api mirror of /actuator/health — the WAF blocks
+        // /actuator/** when the UI is accessed through the load balancer.
+        return api.get('/utils/health', {
             validateStatus: function (status) {
                 return (status >= 200 && status < 300) || status === 503;
             }
