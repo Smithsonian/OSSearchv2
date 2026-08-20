@@ -4,6 +4,7 @@
       <div class="row">
         <div class="col-md-12">
           <h1>Backend Status</h1>
+          <p v-if="node" class="text-muted small">Reported by application server: <b>{{ node }}</b> (requests are load-balanced; another server may answer next time)</p>
         </div>
       </div>
       <div class="row clearfix">
@@ -84,6 +85,7 @@ export default {
   data() {
     return {
       json: '',
+      node: '',
       backend_status: '',
       db_status: '',
       schedulerStatus: '',
@@ -134,6 +136,7 @@ export default {
       await ServerStatusService.getServerStatus().then(
           response => {
             this.json = response.data
+            this.node = this.json.node
             this.db_status = this.json.components?.db?.status
             this.ldap = this.json.components?.ldap?.status
             this.solr_master = this.json.components?.solr?.details['master.status']

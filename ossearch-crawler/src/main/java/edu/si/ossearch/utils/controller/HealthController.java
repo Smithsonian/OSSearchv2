@@ -43,7 +43,19 @@ public class HealthController {
         HealthComponent health = healthEndpoint.health();
         HttpStatus httpStatus = Status.DOWN.equals(health.getStatus()) || Status.OUT_OF_SERVICE.equals(health.getStatus())
                 ? HttpStatus.SERVICE_UNAVAILABLE : HttpStatus.OK;
-        return ResponseEntity.status(httpStatus).body(toMap(health));
+        Map<String, Object> body = toMap(health);
+        // Behind the load balancer each request may land on a different app
+        // server; the node name lets the UI say which server it is describing.
+        body.put("node", nodeName());
+        return ResponseEntity.status(httpStatus).body(body);
+    }
+
+    private String nodeName() {
+        try {
+            return java.net.InetAddress.getLocalHost().getHostName();
+        } catch (java.net.UnknownHostException e) {
+            return "unknown";
+        }
     }
 
     private Map<String, Object> toMap(HealthComponent component) {
