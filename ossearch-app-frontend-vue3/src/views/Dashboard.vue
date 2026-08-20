@@ -396,9 +396,8 @@ export default {
             this.backedStatus = response.data.status
           })
           .catch(() => {
-            // The /actuator/health probe is blocked (403) by the F5/WAF when
-            // the UI is accessed through the load balancer. Never route this
-            // failure into `error` — its 403 handler force-logs-out the user.
+            // A failed health probe must never feed the shared `error`
+            // watcher — its 403 branch force-logs-out the user.
             this.backedStatus = 'UNKNOWN'
           })
     },
