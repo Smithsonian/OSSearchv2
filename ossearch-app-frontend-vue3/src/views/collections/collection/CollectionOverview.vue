@@ -427,8 +427,9 @@ export default {
           })
     },
     previewSearch() {
-      let url = 'https://ossearch.si.edu/search'
-      url = process.env.VUE_APP_API_BASE_URL + '/search'
+      // relative to the server the admin UI is loaded from; every app
+      // server proxies /search to its local backend
+      let url = process.env.VUE_APP_API_BASE_URL + '/search'
       let params = {
         q: this.search ? this.search : '*',
         site: this.collection?.name,
@@ -438,7 +439,7 @@ export default {
         getfields: '*'
       }
 
-      url = new URL(url)
+      url = new URL(url, window.location.origin)
       url.search = new URLSearchParams(params)
       console.log("previewSearch", url.toString())
 
