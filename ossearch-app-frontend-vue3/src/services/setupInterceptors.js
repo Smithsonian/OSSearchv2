@@ -12,8 +12,17 @@ const setup = (store) => {
                 config.headers["Authorization"] = 'Bearer ' + token;  // for Spring Boot back-end
                 // config.headers["x-access-token"] = token; // for Node.js Express back-end
             }
-            // change the url scheme from http to https
-            config.url = config.url.replace('http://127.0.0.1:8484', process.env.VUE_APP_API_BASE_URL)
+            // Spring Data REST HATEOAS links are generated as
+            // http://127.0.0.1:8484/api/... because the backend sits behind
+            // the Apache proxy and sees the proxy's local Host header.
+            // Rewrite them to be relative, and strip the leading /api so
+            // axios doesn't double it when it prepends baseURL ("/api").
+            if (config.url.startsWith('http://127.0.0.1:8484')) {
+                config.url = config.url.substring('http://127.0.0.1:8484'.length)
+            }
+            if (config.url.startsWith('/api/')) {
+                config.url = config.url.substring(4)
+            }
             return config;
         },
         (error) => {
