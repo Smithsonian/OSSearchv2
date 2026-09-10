@@ -6,6 +6,8 @@
   <div class="container-fluid px-4">
     <Breadcrumb />
 
+    <ScheduledBackupStatus />
+
     <div class="card mb-3">
       <div class="card-header">
         <i class="fas fa-cloud-download-alt me-1"></i>
@@ -576,6 +578,7 @@ import TreeView from "../components/TreeView.vue";
 import Modal from "../components/Modal.vue";
 import Datatable from "../components/table/Datatable.vue";
 import FileDropZone from "../components/FileDropZone.vue";
+import ScheduledBackupStatus from "../components/backup/ScheduledBackupStatus.vue";
 
 export default {
   name: "BackupRestore",
@@ -586,6 +589,7 @@ export default {
     DualListBox,
     Breadcrumb,
     FileDropZone,
+    ScheduledBackupStatus,
   },
   data() {
     return {

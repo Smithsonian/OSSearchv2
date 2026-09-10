@@ -1,8 +1,12 @@
 package edu.si.ossearch.utils.backup_restore.controller;
 
 import edu.si.ossearch.collection.repository.CollectionRepository;
+import edu.si.ossearch.utils.backup_restore.config.ScheduledBackupConfig;
 import edu.si.ossearch.utils.backup_restore.request.RestoreLocalBackupRequest;
+import edu.si.ossearch.utils.backup_restore.retention.BackupRetentionRunner;
+import edu.si.ossearch.utils.backup_restore.retention.RetentionResult;
 import edu.si.ossearch.utils.backup_restore.service.BackupRestoreService;
+import edu.si.ossearch.utils.backup_restore.status.BackupJobStatusService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -16,6 +20,8 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.scheduling.support.CronExpression;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -23,7 +29,9 @@ import jakarta.validation.Valid;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.io.File;
 import java.text.SimpleDateFormat;
+import java.time.LocalDateTime;
 import java.util.*;
 
 /**
@@ -41,6 +49,146 @@ public class BackUpRestoreController {
 
     @Autowired
     BackupRestoreService backupRestoreService;
+
+    @Autowired
+    ScheduledBackupConfig scheduledBackupConfig;
+
+    @Autowired
+    BackupJobStatusService backupJobStatusService;
+
+    @Autowired
+    BackupRetentionRunner backupRetentionRunner;
+
+    @Operation(summary = "scheduled collection backup status: config + last run", responses = {@ApiResponse(content = @Content(mediaType = "application/json"))})
+    @GetMapping(value = "/backup/scheduled/status")
+    // Admin-gated: the response includes lastRun.errorMessage, which can be a raw exception
+    // message (absolute NFS paths, JDBC/Hibernate internals). /api/** is only .authenticated()
+    // by default (see WebSecurityConfig), and the UI only exposes Backup/Restore to admins, so
+    // this endpoint should not be reachable by any other authenticated user.
+    @PreAuthorize("hasRole('ROLE_ADMIN')")
+    public ResponseEntity<Map<String, Object>> scheduledBackupStatus() {
+        Map<String, Object> status = new LinkedHashMap<>();
+        try {
+            // "enabledOnThisNode" is honestly node-local: enabled is per-host by design (true on
+            // exactly one node), and the load balancer can route this GET to either app server,
+            // so this field only describes whichever node answered THIS request - it is NOT a
+            // cluster-wide "are scheduled backups enabled" answer. If lastRun.hostname differs
+            // from "node" below, that proves the job is enabled and running on the OTHER node,
+            // even though this node reports enabledOnThisNode=false. Cluster-wide enablement
+            // discovery is out of scope here.
+            status.put("enabledOnThisNode", scheduledBackupConfig.isEnabled());
+            // "node" is who answered THIS request; "lastRun.hostname" is who actually
+            // executed the run being reported. The load balancer can route this GET to
+            // either app server while only one of them runs the scheduled job, so the
+            // UI needs both to tell "who answered" apart from "who executed".
+            status.put("node", nodeName());
+            status.put("cron", scheduledBackupConfig.getCron());
+
+            // nextRun is pure arithmetic on the cron expression - it is computed
+            // regardless of enabledOnThisNode because it does not claim a backup will
+            // actually happen, only when the expression would next fire. Whether it
+            // actually runs is the separate "enabledOnThisNode" fact above, and we keep
+            // that honest here too: when enabled=false on this node the @Scheduled
+            // trigger still fires on schedule but the job early-returns and does
+            // nothing, so nextRunNote says so alongside the computed time instead of
+            // suppressing the time.
+            String nextRun = null;
+            String nextRunNote = null;
+            try {
+                LocalDateTime next = CronExpression.parse(scheduledBackupConfig.getCron())
+                        .next(LocalDateTime.now());
+                if (next != null) {
+                    nextRun = next.toString();
+                    if (!scheduledBackupConfig.isEnabled()) {
+                        nextRunNote = "scheduled backups are not enabled on this node, so this time will not actually run";
+                    }
+                } else {
+                    nextRunNote = "cron expression has no future fire time";
+                }
+            } catch (Exception e) {
+                nextRunNote = "could not parse cron expression: " + e.getMessage();
+            }
+            status.put("nextRun", nextRun);
+            status.put("nextRunNote", nextRunNote);
+
+            status.put("lastRun", backupJobStatusService.getLastRun().orElse(null));
+            status.put("retention", retentionStatus());
+        } catch (Exception e) {
+            log.error("Problem getting scheduled backup status!", e);
+            status.put("error", e.getMessage());
+        }
+        return ResponseEntity.ok(status);
+    }
+
+    /**
+     * Maximum number of pruning candidates included in the status response. RetentionResult
+     * itself is internally bounded at 200; this is a further UI-facing cap.
+     */
+    private static final int MAX_REPORTED_CANDIDATES = 50;
+
+    /**
+     * Builds the "retention" block of the scheduled backup status response.
+     * <p>
+     * Note that {@code preview()} walks the whole crawlDir on every call. That is acceptable
+     * synchronously here because this endpoint is admin-only (see {@code @PreAuthorize}
+     * above) and the UI loads it on demand rather than polling it.
+     * <p>
+     * Never throws: a retention preview problem must not fail the status endpoint.
+     */
+    private Map<String, Object> retentionStatus() {
+        Map<String, Object> retention = new LinkedHashMap<>();
+        retention.put("days", scheduledBackupConfig.getRetention().getDays());
+
+        RetentionResult preview = null;
+        try {
+            preview = backupRetentionRunner.preview();
+        } catch (Exception e) {
+            log.error("Problem previewing backup retention candidates!", e);
+        }
+
+        if (preview == null) {
+            // null means "preview unavailable", which is distinct from an empty candidate
+            // list ("nothing would be pruned").
+            retention.put("candidateCount", 0);
+            retention.put("candidateTruncated", false);
+            retention.put("candidates", new ArrayList<>());
+            retention.put("error", "retention preview unavailable");
+            return retention;
+        }
+
+        List<Map<String, Object>> candidates = new ArrayList<>();
+        for (String path : preview.getCandidateFiles()) {
+            if (candidates.size() >= MAX_REPORTED_CANDIDATES) {
+                break;
+            }
+            // Do not leak absolute filesystem paths to the UI. Given
+            // <crawlDir>/<collDir>/backup/<file>, report <collDir> and the bare filename,
+            // derived by File parent navigation rather than by splitting on a hardcoded
+            // path separator.
+            File file = new File(path);
+            File backupDir = file.getParentFile();
+            File collectionDir = backupDir != null ? backupDir.getParentFile() : null;
+            Map<String, Object> candidate = new LinkedHashMap<>();
+            candidate.put("collection", collectionDir != null ? collectionDir.getName() : null);
+            candidate.put("file", file.getName());
+            candidates.add(candidate);
+        }
+
+        retention.put("candidateCount", preview.getCandidateCount());
+        // True for both the 50-entry cap here and RetentionResult's own 200-path bound.
+        retention.put("candidateTruncated", preview.getCandidateCount() > candidates.size());
+        retention.put("candidates", candidates);
+        retention.put("error", null);
+        return retention;
+    }
+
+    private String nodeName() {
+        try {
+            return java.net.InetAddress.getLocalHost().getHostName();
+        } catch (java.net.UnknownHostException e) {
+            return "unknown";
+        }
+    }
 
     @GetMapping(value = "/backup/collection/{id:\\d+}")
     @Operation(summary = "backup collection by id", responses = {@ApiResponse(content = @Content(mediaType = "application/json"))})

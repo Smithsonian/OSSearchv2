@@ -11,6 +11,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
+import org.springframework.data.rest.core.annotation.RestResource;
 import org.springframework.security.access.prepost.PostAuthorize;
 import org.springframework.security.access.prepost.PostFilter;
 
@@ -59,6 +60,17 @@ public interface CollectionRepository extends JpaRepository<Collection, Long> {
 
     @Operation(summary = "Get collections by id")
     Optional<CollectionTableData> getCollectionsById(@Param("id") long id);
+
+    /**
+     * Find all collection ids. Intentionally SpEL-free: this is called from a
+     * {@code @Scheduled} thread (the scheduled backup job), which runs with an
+     * EMPTY SecurityContext, so a SpEL auth predicate like {@code ?#{authentication.name}}
+     * or {@code hasRole(...)} (as used by the neighbouring findAll() methods) would
+     * fail or return an empty result. Not exposed as a REST endpoint.
+     */
+    @RestResource(exported = false)
+    @Query("select c.id from Collection c order by c.id")
+    List<Long> findAllCollectionIds();
 
     interface CollectionIdNameInfoTest {
         long getId();

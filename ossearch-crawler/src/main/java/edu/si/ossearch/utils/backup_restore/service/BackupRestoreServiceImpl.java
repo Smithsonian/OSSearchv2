@@ -77,7 +77,7 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
 
     @Override
     @Transactional
-    public ByteArrayInputStream backupCollection(Long id, boolean withCrawlSchedule, boolean includeUsers) throws Exception {
+    public ByteArrayInputStream backupCollection(Long id, boolean withCrawlSchedule, boolean includeUsers, boolean automatic) throws Exception {
 
         JSONObject json = new JSONObject();
 
@@ -100,7 +100,7 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
             json.getJSONObject("collection").remove("users");
         }
 
-        saveLocalBackup(collectionName+"_"+ id, json);
+        saveLocalBackup(collectionName+"_"+ id, json, automatic);
 
         return new ByteArrayInputStream(json.toString(4).getBytes(StandardCharsets.UTF_8));
     }
@@ -115,7 +115,12 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
 
         if (collectionBackupDirPath.exists()) {
 
-            return Stream.of(collectionBackupDirPath.listFiles())
+            File[] files = collectionBackupDirPath.listFiles();
+            if (files == null) {
+                return new ArrayList<>();
+            }
+
+            return Stream.of(files)
                     .filter(file -> !file.isDirectory())
                     .map(file -> {
                         Map<String, String> row = new HashMap<>();
@@ -206,12 +211,45 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
         zipOut.closeEntry();
     }
 
-    private void saveLocalBackup(String collectionDir, JSONObject json) throws IOException {
+    private void saveLocalBackup(String collectionDir, JSONObject json, boolean automatic) throws IOException {
         Path crawlBaseDir = new Path(crawlDir.getAbsolutePath(), collectionDir);
         Path collectionBackupDir = new Path(crawlBaseDir, "backup");
-        String filename = crawlBaseDir.getName()+ "_backup_" + new SimpleDateFormat("yyyy-MM-dd'T'HH-mm-ss").format(new Date()) + ".json";
+        // Only automatic (scheduled) backups carry the marker - it is what the retention
+        // sweep matches on, so manual backups keep their original names and are exempt.
+        // The name is built by BackupRestoreService#backupFileName, the single source of
+        // truth that BackupRetentionPolicy.BACKUP_FILE is matched against.
+        String filename = BackupRestoreService.backupFileName(crawlBaseDir.getName(), automatic, new Date());
+
+        // Defense in depth. collectionDir is built from the collection name, which bean
+        // validation on Collection#name now keeps free of "/", "\" and "..". That validation
+        // can still be bypassed - a direct DB edit, a data migration, or any write path that
+        // skips Hibernate's BeanValidationEventListener - so refuse to write outside crawlDir
+        // here as well, using CANONICAL paths so that ".." segments and symlinks are resolved
+        // before the comparison rather than compared literally.
+        assertInsideCrawlDir(new File(collectionBackupDir.toString(), filename));
+
         Files.createDirectories(Paths.get(collectionBackupDir.toString()));
         Files.write(Paths.get(collectionBackupDir.toString(), filename), json.toString(4).getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Refuses any backup target that does not resolve to a location underneath {@code crawlDir}.
+     * Intentionally scoped to {@code saveLocalBackup} only: {@code localBackup(...)} and
+     * {@code getBackupFile(...)} have their own pre-existing traversal concerns that are tracked
+     * separately.
+     *
+     * @param target the file about to be written
+     * @throws IOException if the canonical target is not contained in the canonical {@code crawlDir}
+     */
+    void assertInsideCrawlDir(File target) throws IOException {
+        File base = crawlDir.getCanonicalFile();
+        File canonicalTarget = target.getCanonicalFile();
+        // The trailing File.separator is load-bearing: without it a sibling directory whose name
+        // merely starts with the base name - "/data/crawlsevil" against a base of "/data/crawls" -
+        // would satisfy a naive startsWith check and slip through.
+        if (!canonicalTarget.getPath().startsWith(base.getPath() + File.separator)) {
+            throw new IOException("refusing to write a backup outside crawlDir: " + canonicalTarget.getPath());
+        }
     }
 
     @Override
@@ -354,7 +392,7 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
                             json.getJSONObject("collection").remove("users");
                         }
 
-                        saveLocalBackup(name + "_" + id, json);
+                        saveLocalBackup(name + "_" + id, json, false);
 
                         writeZipEntry(zipOut, name + "_" + id + "_backup_" + timestamp + ".json", json.toString(4));
 

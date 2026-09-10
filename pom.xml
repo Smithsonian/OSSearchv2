@@ -31,6 +31,19 @@
         <revision>0.1.9-SNAPSHOT</revision>
         <nutch.version>1.18</nutch.version>
         <hadoop.version>3.4.1</hadoop.version>
+        <!--
+            Tests remain skipped by default (unchanged behavior), but this is now a property
+            rather than a hardcoded literal in the surefire config below, so a test run can
+            actually be requested. This property is deliberately named "ossearch.skipTests"
+            rather than "skipTests": "skipTests" is surefire's own well-known system property,
+            and since this configuration lives in the ROOT pluginManagement it is inherited by
+            every module, including the legacy nutch-plugins/* modules whose pre-existing tests
+            are broken. If this were named "skipTests", passing -DskipTests=false to run the
+            ossearch-crawler tests would also un-skip (and break) those legacy modules. The
+            project-specific name avoids colliding with surefire's own property, so only an
+            explicit -Dossearch.skipTests=false opts a module in.
+        -->
+        <ossearch.skipTests>true</ossearch.skipTests>
     </properties>
 
     <build>
@@ -70,7 +83,7 @@
                     <artifactId>maven-surefire-plugin</artifactId>
                     <version>2.22.2</version>
                     <configuration>
-                        <skipTests>true</skipTests>
+                        <skipTests>${ossearch.skipTests}</skipTests>
                     </configuration>
                 </plugin>
                 <plugin>
