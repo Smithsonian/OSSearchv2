@@ -17,6 +17,7 @@ import org.springframework.data.projection.ProjectionFactory;
 import org.springframework.data.projection.SpelAwareProxyProjectionFactory;
 import org.springframework.hateoas.Link;
 import org.springframework.hateoas.server.EntityLinks;
+import org.springframework.context.support.DefaultMessageSourceResolvable;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -24,8 +25,12 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.context.request.WebRequest;
 
 import java.net.URI;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 /**
  * @author jbirkhimer
@@ -99,8 +104,13 @@ public class CollectionController {
     }
 
 
+    // The body is a JSON object with a "message" field rather than a bare String. The UI reads
+    // errors.response.data.message (CollectionCreate.vue), which is undefined against a String
+    // body - so the carefully worded @Pattern/@Size messages on Collection#name were being
+    // replaced in the dialog by axios' generic "Request failed with status code 400". Every
+    // branch below keeps its original HTTP status.
     @ExceptionHandler(Exception.class)
-    public ResponseEntity<String> handleException(Exception e, WebRequest request) {
+    public ResponseEntity<Map<String, Object>> handleException(Exception e, WebRequest request) {
 
 //        UserResponse response = null;
 
@@ -108,20 +118,43 @@ public class CollectionController {
             // This controller-local @ExceptionHandler(Exception.class) is consulted by
             // ExceptionHandlerExceptionResolver before Spring's own DefaultHandlerExceptionResolver,
             // so without this branch a @Valid failure would fall through to the else below and be
-            // reported as an opaque 500 rather than the 400 it is. Deliberately minimal: the rest
-            // of this handler is left exactly as it was.
+            // reported as an opaque 500 rather than the 400 it is.
+            MethodArgumentNotValidException ex = (MethodArgumentNotValidException) e;
             log.warn("Validation failed for collection request ::: {}", e.getMessage());
-            return new ResponseEntity<>(e.getMessage(), HttpStatus.BAD_REQUEST);
+            // e.getMessage() here is the whole BindingResult dump (object name, rejected value,
+            // codes). Report only the constraint messages, which are written to be shown to a
+            // user verbatim.
+            String message = ex.getBindingResult().getFieldErrors().stream()
+                    .map(DefaultMessageSourceResolvable::getDefaultMessage)
+                    .filter(Objects::nonNull)
+                    .distinct()
+                    .collect(Collectors.joining(" "));
+            if (message.isEmpty()) {
+                message = "The submitted collection is not valid.";
+            }
+            return new ResponseEntity<>(errorBody(HttpStatus.BAD_REQUEST, message), HttpStatus.BAD_REQUEST);
         } else if(e instanceof DataIntegrityViolationException){
             log.error("DataIntegrity Violation Exception ::: {}", e);
             DataIntegrityViolationException ex = (DataIntegrityViolationException) e;
 //            response = new UserResponse(ErrorCodes.DuplicateMobNo, "This mobile no is already Registered!");
-            return new ResponseEntity<>(e.getMessage(), HttpStatus.CONFLICT);
+            return new ResponseEntity<>(errorBody(HttpStatus.CONFLICT, e.getMessage()), HttpStatus.CONFLICT);
         } else if (e instanceof DataRetrievalFailureException) {
-            return new ResponseEntity<>(e.getMessage(), HttpStatus.NOT_FOUND);
+            return new ResponseEntity<>(errorBody(HttpStatus.NOT_FOUND, e.getMessage()), HttpStatus.NOT_FOUND);
         } else {
-            return new ResponseEntity<>(e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
+            return new ResponseEntity<>(errorBody(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage()), HttpStatus.INTERNAL_SERVER_ERROR);
         }
+    }
+
+    /**
+     * Error body shaped like Spring Boot's own default error response, so the UI's existing
+     * {@code errors.response.data.message} read works against it.
+     */
+    private Map<String, Object> errorBody(HttpStatus status, String message) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("status", status.value());
+        body.put("error", status.getReasonPhrase());
+        body.put("message", message != null ? message : status.getReasonPhrase());
+        return body;
     }
 
 }

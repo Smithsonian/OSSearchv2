@@ -62,6 +62,19 @@ public class Collection {
     // Filesystem constraint, not a display one: the on-disk directory is "<name>_<id>" and most
     // filesystems cap a single path component at 255 bytes, so 200 leaves room for the "_<id>"
     // suffix (and for multi-byte UTF-8 characters costing more than one byte each).
+    //
+    // Known, deliberate schema asymmetry: Hibernate derives DDL length from @Size, so a FRESH
+    // schema gets name VARCHAR(200) while every pre-existing database keeps the VARCHAR(255)
+    // it was created with - hibernate.ddl-auto=update is additive and never narrows an
+    // existing column. This is left unresolved on purpose rather than "fixed":
+    //   - Narrowing the live column would need a migration that could truncate names longer
+    //     than 200 characters, which existing rows may legitimately have since they predate
+    //     this constraint (and the @Pattern comment above explains why old names must stay
+    //     editable rather than be rejected).
+    //   - Widening this to @Size(max = 255) would break the "<name>_<id>" budget the 200 was
+    //     chosen for.
+    // The 200-character rule is enforced by bean validation on every insert and update
+    // regardless, so the wider legacy column is unreachable slack, not a second limit.
     @Size(max = 200, message = "A collection name cannot be longer than 200 characters because it becomes a directory name on disk.")
     // Breakdown of the regex, clause by clause:
     //   (?!\s)            - no leading whitespace
