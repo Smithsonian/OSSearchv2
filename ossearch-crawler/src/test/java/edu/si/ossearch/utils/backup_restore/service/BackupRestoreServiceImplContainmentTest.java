@@ -12,6 +12,8 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -85,10 +87,10 @@ class BackupRestoreServiceImplContainmentTest {
     @DisplayName("saveLocalBackup refuses a traversal collection directory and writes nothing")
     void saveLocalBackupRefusesTraversal() throws Exception {
         Method saveLocalBackup = BackupRestoreServiceImpl.class
-                .getDeclaredMethod("saveLocalBackup", String.class, JSONObject.class, boolean.class);
+                .getDeclaredMethod("saveLocalBackup", String.class, JSONObject.class);
         saveLocalBackup.setAccessible(true);
 
-        assertThatThrownBy(() -> saveLocalBackup.invoke(service, "../evil_1", new JSONObject().put("a", "b"), true))
+        assertThatThrownBy(() -> saveLocalBackup.invoke(service, "../evil_1", new JSONObject().put("a", "b")))
                 .isInstanceOf(InvocationTargetException.class)
                 .cause()
                 .isInstanceOf(IOException.class)
@@ -101,13 +103,116 @@ class BackupRestoreServiceImplContainmentTest {
     @DisplayName("saveLocalBackup still writes a well-formed backup for a legitimate name")
     void saveLocalBackupWritesInsideCrawlDir() throws Exception {
         Method saveLocalBackup = BackupRestoreServiceImpl.class
-                .getDeclaredMethod("saveLocalBackup", String.class, JSONObject.class, boolean.class);
+                .getDeclaredMethod("saveLocalBackup", String.class, JSONObject.class);
         saveLocalBackup.setAccessible(true);
 
-        saveLocalBackup.invoke(service, "americanhistory_1", new JSONObject().put("a", "b"), true);
+        saveLocalBackup.invoke(service, "americanhistory_1", new JSONObject().put("a", "b"));
 
         File backupDir = new File(crawlDir, "americanhistory_1/backup");
         assertThat(backupDir).isDirectory();
+        // Exactly one entry, and it is the backup: the staging file the atomic write uses is
+        // moved into place and its staging directory removed, so nothing else is left behind.
+        // A leftover temp would break this deliberately - collectionListBackupsAvailable
+        // lists every non-directory entry here and would offer it as a restorable backup.
         assertThat(backupDir.listFiles()).hasSize(1);
+        assertThat(backupDir.listFiles()[0].getName()).matches("americanhistory_1_backup_.+\\.json");
+    }
+
+    /**
+     * Finding #7: the write must go through a staging file plus a rename, not straight onto
+     * the final path. On NFS a plain {@code Files.write} onto the destination can leave a
+     * truncated {@code *_backup_<ts>.json} behind, and retention ranks on the filename, so
+     * that partial file sorts newest and pushes the last good backup into the deletable set.
+     * <p>
+     * "It never writes in place" is an absence, and the deterministic way to assert it is to
+     * make the staged path unusable and check that the write then produces NOTHING: a regular
+     * file is planted where the writer wants its staging directory, so
+     * {@code Files.createDirectories} fails before any byte is written. The old in-place
+     * writer does not touch that path at all, so it completes normally and leaves a backup
+     * file - which is exactly the assertion below failing.
+     * <p>
+     * The companion positive case (a normal write really does produce the backup, with no
+     * residue) is {@link #saveLocalBackupWritesInsideCrawlDir}; without it this test could be
+     * satisfied by a writer that never writes anything.
+     */
+    @Test
+    @DisplayName("saveLocalBackup stages the write and produces no file when staging fails")
+    void saveLocalBackupWritesViaAStagingFile() throws Exception {
+        File backupDir = new File(crawlDir, "americanhistory_1/backup");
+        assertThat(backupDir.mkdirs()).isTrue();
+
+        // A regular file occupying the staging directory's path.
+        Files.writeString(new File(backupDir, stagingDirName()).toPath(), "not a directory");
+
+        Method saveLocalBackup = BackupRestoreServiceImpl.class
+                .getDeclaredMethod("saveLocalBackup", String.class, JSONObject.class);
+        saveLocalBackup.setAccessible(true);
+
+        assertThatThrownBy(() -> saveLocalBackup.invoke(service, "americanhistory_1",
+                new JSONObject().put("a", "b")))
+                .isInstanceOf(InvocationTargetException.class)
+                .cause()
+                .isInstanceOf(IOException.class);
+
+        // Nothing under the final name: not a complete backup, and not a partial one either.
+        assertThat(backupDir.listFiles()).hasSize(1);
+        assertThat(backupDir.listFiles()[0].getName()).isEqualTo(stagingDirName());
+    }
+
+    /**
+     * The atomicity guarantee that matters to retention, asserted on content: the file that
+     * appears under the final name is always the complete document. A large payload is used
+     * so that an in-place write would need many write syscalls to land it.
+     */
+    @Test
+    @DisplayName("the file under the final name is always the complete document")
+    void saveLocalBackupLandsTheCompleteDocument() throws Exception {
+        Method saveLocalBackup = BackupRestoreServiceImpl.class
+                .getDeclaredMethod("saveLocalBackup", String.class, JSONObject.class);
+        saveLocalBackup.setAccessible(true);
+
+        JSONObject payload = new JSONObject().put("a", "b".repeat(200_000));
+        saveLocalBackup.invoke(service, "americanhistory_1", payload);
+
+        File backupDir = new File(crawlDir, "americanhistory_1/backup");
+        File[] written = backupDir.listFiles();
+        assertThat(written).hasSize(1);
+        assertThat(written[0]).content().isEqualTo(payload.toString(4));
+    }
+
+    /**
+     * The staging file must be invisible to both readers of the backup directory even while
+     * it exists: retention filters by name, but {@code collectionListBackupsAvailable} lists
+     * every non-directory entry and would otherwise offer a half-written file to a user as a
+     * restorable backup. Staging inside a subdirectory is what satisfies the second one.
+     */
+    @Test
+    @DisplayName("a staged file left behind by a crash is not listed as an available backup")
+    void leftoverStagingFileIsNotListedAsAnAvailableBackup() throws Exception {
+        File backupDir = new File(crawlDir, "americanhistory_1/backup");
+        assertThat(backupDir.mkdirs()).isTrue();
+
+        Method saveLocalBackup = BackupRestoreServiceImpl.class
+                .getDeclaredMethod("saveLocalBackup", String.class, JSONObject.class);
+        saveLocalBackup.setAccessible(true);
+        saveLocalBackup.invoke(service, "americanhistory_1", new JSONObject().put("a", "b"));
+
+        // Simulate the residue of a hard kill between "staged" and "renamed", in whatever
+        // location the writer stages into.
+        File stagingDir = new File(backupDir, stagingDirName());
+        assertThat(stagingDir.mkdirs()).isTrue();
+        Files.writeString(new File(stagingDir, "staged.123.part").toPath(), "half a backup");
+
+        List<Map<String, String>> listed = service.collectionListBackupsAvailable("americanhistory_1");
+
+        assertThat(listed).hasSize(1);
+        assertThat(listed.get(0).get("file")).matches("americanhistory_1_backup_.+\\.json");
+    }
+
+    /** Reads the writer's own staging directory name so this test cannot drift from it. */
+    private String stagingDirName() throws Exception {
+        java.lang.reflect.Field f = BackupRestoreServiceImpl.class.getDeclaredField("STAGING_DIR_NAME");
+        f.setAccessible(true);
+        return (String) f.get(null);
     }
 }

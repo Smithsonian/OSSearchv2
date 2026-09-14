@@ -35,18 +35,29 @@ public class RetentionResult {
     private static final int MAX_ERROR_MESSAGE_LENGTH = 2000;
 
     /**
-     * The two - and only two - states a retention step can end in. Retention always runs
-     * (there is no configuration switch to skip it), so this exists purely to distinguish
-     * a crashed sweep from a clean one: a {@code boolean ran} flag alone would leave a
-     * crashed sweep (deleted=0, failedDelete=0) byte-for-byte indistinguishable from one
-     * that genuinely had nothing to prune, making a broken retention sweep look like a
-     * normal run in the persisted status and in the UI.
+     * The three states a retention step can end in. All three leave
+     * {@code deleted=0, failedDelete=0} possible, so a {@code boolean ran} flag alone would
+     * leave a crashed or deliberately-skipped sweep byte-for-byte indistinguishable from one
+     * that genuinely had nothing to prune, making broken retention look like a normal run in
+     * the persisted status and in the UI. Each therefore gets its own constant AND its own
+     * {@link #summary()} wording.
+     * <p>
+     * Persisted into the {@code retention_status VARCHAR(32)} column, so a constant name must
+     * stay within 32 characters.
      */
     public enum Outcome {
         /** Retention ran to completion (possibly deleting nothing, possibly dry-run). */
         COMPLETED,
         /** Retention started but blew up; {@link #getErrorMessage()} says why. */
-        FAILED
+        FAILED,
+        /**
+         * Retention was deliberately not run, so nothing was even examined. Distinct from
+         * {@link #FAILED}, which would be a lie: the sweep did not break, the caller chose
+         * not to start it (e.g. every collection backup failed, or the cluster lease was
+         * lost mid-run and this node no longer owns the volume).
+         * {@link #getErrorMessage()} carries the reason.
+         */
+        SKIPPED
     }
 
     private final boolean dryRun;
@@ -64,7 +75,11 @@ public class RetentionResult {
      */
     private Outcome outcome = Outcome.COMPLETED;
 
-    /** Non-null only for {@link Outcome#FAILED} results. Truncated to 2000 chars. */
+    /**
+     * The reason for an abnormal outcome. Non-null only for {@link Outcome#FAILED} (the
+     * exception detail) and {@link Outcome#SKIPPED} (why the caller chose not to run).
+     * Truncated to 2000 chars.
+     */
     private String errorMessage;
 
     public RetentionResult(boolean dryRun) {
@@ -130,6 +145,27 @@ public class RetentionResult {
         return result;
     }
 
+    /**
+     * Factory for a result representing a retention step the caller deliberately did not
+     * start - not a failure and not a clean sweep. Mirrors {@link #failed(String)}: the
+     * whole point of {@link Outcome} is that "nothing was pruned" must never be ambiguous
+     * about WHY, and "we chose not to look" is a third answer that deserves the same
+     * treatment as the other two.
+     * <p>
+     * Callers today: the scheduled backup job, when every collection's backup failed (so
+     * pruning against a broken run would be reckless) and when the cluster lease was lost
+     * mid-run (so this node no longer owns the volume).
+     *
+     * @param reason why retention was skipped, truncated to
+     *               {@value #MAX_ERROR_MESSAGE_LENGTH} chars; may be null
+     */
+    public static RetentionResult skipped(String reason) {
+        RetentionResult result = new RetentionResult(false);
+        result.outcome = Outcome.SKIPPED;
+        result.errorMessage = truncate(reason);
+        return result;
+    }
+
     private static String truncate(String message) {
         if (message == null) {
             return null;
@@ -149,6 +185,9 @@ public class RetentionResult {
     public String summary() {
         if (outcome == Outcome.FAILED) {
             return String.format("Backup retention: FAILED - no backups were pruned: %s", errorMessage);
+        }
+        if (outcome == Outcome.SKIPPED) {
+            return String.format("Backup retention: SKIPPED - retention was not run: %s", errorMessage);
         }
         if (dryRun) {
             return String.format("Backup retention (dry-run): would delete %d", candidateCount);

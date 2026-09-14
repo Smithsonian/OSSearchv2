@@ -37,7 +37,11 @@ public class BackupRetentionRunner {
             BackupRetentionPolicy policy = new BackupRetentionPolicy(
                     crawlDir,
                     config.getRetention().getDays(),
-                    false);
+                    config.getRetention().getCount(),
+                    false,
+                    // logCandidates: the nightly run is the one place an operator wants the
+                    // per-file record of what was pruned, and it happens once a day.
+                    true);
 
             RetentionResult result = policy.apply();
             log.info(result.summary());
@@ -52,8 +56,11 @@ public class BackupRetentionRunner {
      * Read-only "what would be pruned next" computation, for the scheduled backup status
      * endpoint. Never deletes anything.
      * <p>
-     * Difference from {@link #run()}: nothing is logged at INFO here, since this can be
-     * called on every UI refresh.
+     * Difference from {@link #run()}: this call logs nothing at INFO - neither the summary
+     * here nor, via {@code logCandidates = false}, the policy's per-candidate lines and
+     * per-collection summaries. That matters because this is served from an HTTP GET on
+     * every admin-UI refresh and those lines carry absolute NFS paths; at DEBUG they are
+     * still available to an operator who asks for them.
      *
      * @return the candidate set, or {@code null} meaning "preview unavailable" (the
      *         computation failed). This is deliberately distinct from a result with an
@@ -65,9 +72,12 @@ public class BackupRetentionRunner {
             BackupRetentionPolicy policy = new BackupRetentionPolicy(
                     crawlDir,
                     config.getRetention().getDays(),
+                    config.getRetention().getCount(),
                     // dryRun is a hard-coded literal true, never read from configuration:
                     // preview() is called from an HTTP GET, and a GET must never delete files.
-                    true);
+                    true,
+                    // logCandidates false - see this method's javadoc.
+                    false);
 
             RetentionResult result = policy.apply();
             log.debug(result.summary());

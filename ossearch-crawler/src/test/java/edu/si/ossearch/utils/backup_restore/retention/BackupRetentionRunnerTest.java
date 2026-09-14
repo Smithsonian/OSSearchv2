@@ -8,6 +8,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -27,7 +28,7 @@ class BackupRetentionRunnerTest {
 
     @Test
     void previewNeverDeletesEvenThoughARealRunAlwaysWould(@TempDir File crawlDir) throws IOException {
-        ScheduledBackupConfig config = config(90);
+        ScheduledBackupConfig config = config(90, 1);
         BackupRetentionRunner runner = runner(config, crawlDir);
         List<File> files = createOldAutomaticBackups(crawlDir, 5);
 
@@ -57,7 +58,7 @@ class BackupRetentionRunnerTest {
      */
     @Test
     void runReportsFailedWhenTheSweepThrows() {
-        ScheduledBackupConfig config = config(90);
+        ScheduledBackupConfig config = config(90, 1);
         BackupRetentionRunner runner = new BackupRetentionRunner(config);
         // crawlDir deliberately left null.
 
@@ -80,7 +81,7 @@ class BackupRetentionRunnerTest {
         File notADirectory = new File(tempDir, "crawlDir-is-a-file");
         assertThat(notADirectory.createNewFile()).isTrue();
 
-        ScheduledBackupConfig config = config(90);
+        ScheduledBackupConfig config = config(90, 1);
         BackupRetentionRunner runner = runner(config, notADirectory);
 
         RetentionResult result = runner.run();
@@ -95,7 +96,7 @@ class BackupRetentionRunnerTest {
      */
     @Test
     void runReportsCompletedOnASuccessfulSweep(@TempDir File crawlDir) throws IOException {
-        ScheduledBackupConfig config = config(90);
+        ScheduledBackupConfig config = config(90, 1);
         BackupRetentionRunner runner = runner(config, crawlDir);
         createOldAutomaticBackups(crawlDir, 5);
 
@@ -107,7 +108,7 @@ class BackupRetentionRunnerTest {
 
     @Test
     void runActuallyDeletesUnlikePreview(@TempDir File crawlDir) throws IOException {
-        ScheduledBackupConfig config = config(90);
+        ScheduledBackupConfig config = config(90, 1);
         BackupRetentionRunner runner = runner(config, crawlDir);
         List<File> files = createOldAutomaticBackups(crawlDir, 5);
 
@@ -115,8 +116,30 @@ class BackupRetentionRunnerTest {
 
         assertThat(result).isNotNull();
         assertThat(result.getDeletedCount()).isGreaterThan(0);
-        // Only the single newest backup is kept by the hardcoded floor; the rest are gone.
+        // count is 1 in this config, so only the single newest backup survives the floor.
         assertThat(files.stream().filter(File::exists)).hasSize(1);
+    }
+
+    /**
+     * The wiring assertion for finding #8: {@code retention.count} must actually reach the
+     * policy. Five surplus backups, all ~200 days old against a 90-day window, so age alone
+     * would take four of them - with {@code count = 4} only one goes. Against the previous
+     * code, which ignored the property and hardcoded a floor of 1, this deletes 4.
+     */
+    @Test
+    void runHonoursTheConfiguredRetentionCountAsTheKeepNewestFloor(@TempDir File crawlDir) throws IOException {
+        ScheduledBackupConfig config = config(90, 4);
+        BackupRetentionRunner runner = runner(config, crawlDir);
+        List<File> files = createOldAutomaticBackups(crawlDir, 5);
+
+        RetentionResult result = runner.run();
+
+        assertThat(result.getOutcome()).isEqualTo(RetentionResult.Outcome.COMPLETED);
+        assertThat(result.getDeletedCount()).isEqualTo(1);
+        assertThat(files.stream().filter(File::exists)).hasSize(4);
+        // createOldAutomaticBackups returns newest first, so the last entry is the one
+        // beyond the floor.
+        assertThat(files.get(4)).doesNotExist();
     }
 
     private BackupRetentionRunner runner(ScheduledBackupConfig config, File crawlDir) {
@@ -125,9 +148,10 @@ class BackupRetentionRunnerTest {
         return runner;
     }
 
-    private ScheduledBackupConfig config(int days) {
+    private ScheduledBackupConfig config(int days, int count) {
         ScheduledBackupConfig config = new ScheduledBackupConfig();
         config.getRetention().setDays(days);
+        config.getRetention().setCount(count);
         return config;
     }
 
@@ -144,8 +168,11 @@ class BackupRetentionRunnerTest {
         List<File> files = new ArrayList<>();
         for (int i = 0; i < howMany; i++) {
             Date when = Date.from(Instant.now().minus(200L + i, ChronoUnit.DAYS));
-            File f = new File(backupDir, BackupRestoreService.backupFileName(COLLECTION_DIR, true, when));
-            assertThat(f.createNewFile()).isTrue();
+            File f = new File(backupDir, BackupRestoreService.backupFileName(COLLECTION_DIR, when));
+            // Non-empty on purpose: retention drops zero-length files (a zero-length backup
+            // is a truncated write, not a backup), so createNewFile() alone would make every
+            // file here invisible to the policy and every assertion below vacuous.
+            Files.writeString(f.toPath(), "{}");
             files.add(f);
         }
         return files;

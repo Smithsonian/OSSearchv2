@@ -20,11 +20,19 @@ import java.util.regex.Pattern;
  * Prunes old collection backup files written by
  * {@code BackupRestoreServiceImpl#saveLocalBackup}.
  * <p>
- * Only <em>automatic</em> (scheduled) backups are ever considered - those whose filename
- * carries the {@link BackupRestoreService#AUTOMATIC_BACKUP_MARKER} segment. Manually
- * created backups are exempt: they are not deletion candidates, and they do not count
- * toward the keep-newest-1 floor either, so the floor protects the single newest automatic
- * backup and every manual backup is kept regardless of age.
+ * Every backup in a collection's {@code backup} directory is a retention candidate -
+ * scheduled and manually created ones alike, since they share one filename convention and
+ * nothing on disk distinguishes them. What protects a collection from losing everything is
+ * the keep-newest-N floor: the newest {@code keepNewestCount} backups are always kept,
+ * whatever their age, and only files behind that floor that are ALSO older than the
+ * retention window are deleted. Both conditions must hold, so the floor is what protects a
+ * human's "before I change something risky" manual backup now that manual backups are no
+ * longer distinguishable on disk.
+ * <p>
+ * A candidate must be named for the collection directory that encloses it: under
+ * {@code <crawlDir>/<collectionDirName>/backup/} only {@code <collectionDirName>_backup_<ts>.json}
+ * matches. A file naming some other collection - copied in by hand, or left by a rename -
+ * is therefore left alone rather than being pruned against this collection's history.
  * <p>
  * Deliberately plain Java with no Spring dependencies (no {@code @Component}, no injected
  * beans) so it can be exercised directly in a JUnit test with {@code @TempDir} and zero
@@ -46,39 +54,75 @@ import java.util.regex.Pattern;
 @Slf4j
 public class BackupRetentionPolicy {
 
-    // Package-private so the test in this package can assert it against the filename the
-    // writer actually produces (BackupRestoreService#backupFileName).
-    //
-    // Pattern.quote on the interpolated marker: this pattern gates a deletion path, and the
-    // marker is a plain constant that could be edited to contain regex metacharacters. A
-    // marker of "auto.v2" would turn the '.' into a wildcard and WIDEN what gets deleted;
-    // "auto+" would make Pattern.compile throw during static init as an
-    // ExceptionInInitializerError, which BackupRetentionRunner's catch (Exception) does not
-    // catch. Quoting makes the marker always a literal.
-    //
-    // DOTALL: the leading ".+" is the collection dir name, and Collection.name is not
-    // validated anywhere, so a name containing \n or \r is writable. Without DOTALL, '.'
-    // excludes line terminators and such a collection's automatic backups would never match
-    // and never be pruned. DOTALL only affects '.'; the timestamp group is explicit digits,
-    // the ".json" tail is anchored, and matches() still anchors the whole string, so nothing
-    // else widens.
-    static final Pattern BACKUP_FILE =
-            Pattern.compile("^.+_backup_" + Pattern.quote(BackupRestoreService.AUTOMATIC_BACKUP_MARKER)
-                    + "_(\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2})\\.json$", Pattern.DOTALL);
+    /**
+     * The backup filename pattern for one collection directory, anchored to that
+     * directory's own name: under {@code <collectionDirName>/backup/} only
+     * {@code <collectionDirName>_backup_<yyyy-MM-dd'T'HH-mm-ss>.json} is a candidate. An
+     * unanchored leading {@code .+} would make every file ending {@code _backup_<ts>.json}
+     * deletable no matter which collection it names.
+     * <p>
+     * Package-private so the test in this package can assert it against the filename the
+     * writer actually produces ({@link BackupRestoreService#backupFileName}).
+     * <p>
+     * {@code Pattern.quote} on the directory name: this pattern gates a deletion path and
+     * the name is data, derived from {@code Collection.name}. Unquoted, a name containing
+     * regex metacharacters would either WIDEN what gets deleted (a '.' becoming a wildcard)
+     * or make {@code Pattern.compile} throw. Quoting makes the name always a literal.
+     * <p>
+     * DOTALL is inert here and kept only as zero-risk defence: with the whole prefix inside
+     * {@code \Q...\E} and the timestamp group written as explicit digit classes, the
+     * pattern contains no '.' metacharacter for the flag to affect. A collection name
+     * containing a line terminator - writable by rows created before this change added
+     * {@code @Pattern}/{@code @Size} validation to {@code Collection#name} - matches
+     * literally either way.
+     */
+    static Pattern backupFilePattern(String collectionDirName) {
+        return Pattern.compile("^" + Pattern.quote(collectionDirName)
+                + "_backup_(\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2})\\.json$", Pattern.DOTALL);
+    }
+
     private static final DateTimeFormatter TS_FORMAT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH-mm-ss");
 
     private final File crawlDir;
     private final int retentionDays;
+    /**
+     * Keep-newest floor: how many of a collection's most recent backups are kept regardless
+     * of age. Bound by {@code ossearch.backup.scheduled.retention.count}, which bean
+     * validation already constrains to {@code [1, 10000]}; the {@code Math.max(1, ...)} in
+     * the constructor is a second belt on a deletion path, because this class is plain Java
+     * and can also be constructed directly (tests, future callers) with no validation in
+     * front of it.
+     */
+    private final int keepNewestCount;
     // No longer a user-facing configuration option: retention always runs. This now only
     // distinguishes an internal preview() call (true, never deletes) from a real run()
     // call (false, actually deletes).
     private final boolean dryRun;
+    /**
+     * Whether each individual candidate, and the per-collection summary, are logged at INFO.
+     * False for {@link BackupRetentionRunner#preview()}, which is reachable from an HTTP GET
+     * on every admin-UI refresh: with a backlog that would write hundreds of INFO lines
+     * containing absolute NFS paths per page view. Those lines still go out at DEBUG, so
+     * nothing is lost when an operator actually wants them.
+     */
+    private final boolean logCandidates;
 
-    public BackupRetentionPolicy(File crawlDir, int retentionDays, boolean dryRun) {
+    /**
+     * Convenience constructor for callers that want candidate logging (the nightly run and
+     * the tests). Equivalent to the five-argument form with {@code logCandidates = true}.
+     */
+    public BackupRetentionPolicy(File crawlDir, int retentionDays, int keepNewestCount, boolean dryRun) {
+        this(crawlDir, retentionDays, keepNewestCount, dryRun, true);
+    }
+
+    public BackupRetentionPolicy(File crawlDir, int retentionDays, int keepNewestCount,
+                                 boolean dryRun, boolean logCandidates) {
         this.crawlDir = crawlDir;
         this.retentionDays = retentionDays;
+        this.keepNewestCount = Math.max(1, keepNewestCount);
         this.dryRun = dryRun;
+        this.logCandidates = logCandidates;
     }
 
     public RetentionResult apply() {
@@ -93,11 +137,18 @@ public class BackupRetentionPolicy {
 
         for (File collectionDir : collectionDirs) {
             // One bad collection directory must never abort the sweep for every remaining
-            // one. This is reachable today: a large retention.days makes
-            // Instant.now().minus(days, ChronoUnit.DAYS) throw ArithmeticException /
-            // DateTimeException, which would otherwise unwind out of this loop and skip
-            // every collection dir ordered after the bad one for the rest of the night.
-            // Mirrors the per-collection isolation the backup loop already has.
+            // one: an unhandled throw here would skip every collection dir ordered after
+            // the bad one for the rest of the night. No specific throw is claimed - this is
+            // ordinary defensive isolation against filesystem faults on a shared NFS mount
+            // (a SecurityException from the security manager, a RuntimeIOException surfacing
+            // from a stale mount, a name that somehow breaks Pattern.compile), mirroring the
+            // per-collection isolation the backup loop already has.
+            //
+            // Explicitly NOT justified by arithmetic overflow in the cutoff computation
+            // below: retention.days is an int, and Instant.now().minus(Integer.MAX_VALUE,
+            // ChronoUnit.DAYS) is about year -5,877,584, comfortably inside Instant's
+            // +/-1e9-year range. An earlier revision of this comment asserted otherwise and
+            // was simply wrong.
             try {
                 applyToCollection(collectionDir, result);
             } catch (Exception e) {
@@ -126,20 +177,37 @@ public class BackupRetentionPolicy {
             return;
         }
 
+        // Anchored to this collection directory's own name, so a backup file naming a
+        // different collection that happens to sit here is not a candidate.
+        Pattern backupFile = backupFilePattern(collectionDir.getName());
+
         List<File> backups = new ArrayList<>();
         for (File f : entries) {
-            // Only plain files matching the exact automatic-backup filename pattern are
-            // ever candidates - manual backups, stray files, subdirectories, ".bak" files,
-            // anything else is left alone.
-            if (f.isFile() && BACKUP_FILE.matcher(f.getName()).matches()) {
+            // Only plain files matching this collection's exact backup filename pattern are
+            // ever candidates - stray files, subdirectories, ".bak" files, files named for
+            // another collection, anything else is left alone.
+            if (f.isFile() && backupFile.matcher(f.getName()).matches()) {
                 // A name-shape match whose timestamp is not a real calendar date/time (e.g.
                 // 2026-13-45T99-99-99) is dropped entirely: not a deletion candidate, and
-                // not counted toward the keep-newest-1 floor either. Counting it would let a
-                // garbage file consume the floor's only slot and displace a genuine backup
-                // into the deletable set.
-                if (timestampOf(f) == null) {
+                // not counted toward the keep-newest floor either. Counting it would let a
+                // garbage file consume a floor slot and displace a genuine backup into the
+                // deletable set.
+                if (timestampOf(f, backupFile) == null) {
                     log.warn("Backup retention: ignoring backup file with unparseable timestamp {} " +
                             "(matches the backup name shape but is not a valid date/time)", f.getAbsolutePath());
+                    continue;
+                }
+                // Same treatment, for the same reason, for a zero-length file. Retention
+                // ranks purely on the filename (see timestampOf()), so a backup truncated to
+                // nothing by a crash or ENOSPC mid-write would still sort as the newest,
+                // occupy a floor slot, and push the last genuinely-good backup into the
+                // deletable set. saveLocalBackup now writes via a temp file + atomic move so
+                // this should not arise; this is the second half of that fix, covering files
+                // already on disk from before it and any write path that bypasses it.
+                if (f.length() == 0L) {
+                    log.warn("Backup retention: ignoring zero-length backup file {} " +
+                            "(truncated or failed write; it must not occupy a keep-newest slot)",
+                            f.getAbsolutePath());
                     continue;
                 }
                 backups.add(f);
@@ -151,12 +219,16 @@ public class BackupRetentionPolicy {
         }
 
         // Newest first, by timestamp parsed from the filename (see timestampOf()).
-        backups.sort(Comparator.comparing(this::timestampOf).reversed());
+        backups.sort(Comparator.comparing((File f) -> timestampOf(f, backupFile)).reversed());
 
-        // The single newest backup is always kept, unconditionally, regardless of age.
-        // This is the code's own invariant, not configurable: there is no knob that can
-        // ever widen or shrink it.
-        int floor = 1;
+        // The newest `keepNewestCount` backups are always kept, unconditionally, regardless
+        // of age; only files behind that floor are even looked at by the age rule below.
+        // This is the count half of the "by count and/or age" retention in issue #16, and
+        // it is configurable via ossearch.backup.scheduled.retention.count (default 30). It
+        // can be widened or narrowed by that knob, but never below 1 (bean validation's
+        // @Min(1), plus the Math.max in the constructor), so a collection can never lose its
+        // entire backup history to retention.
+        int floor = keepNewestCount;
 
         if (backups.size() <= floor) {
             return;
@@ -170,7 +242,7 @@ public class BackupRetentionPolicy {
         int failedInCollection = 0;
 
         for (File f : beyondFloor) {
-            boolean expired = timestampOf(f).isBefore(cutoff);
+            boolean expired = timestampOf(f, backupFile).isBefore(cutoff);
             if (!expired) {
                 continue;
             }
@@ -179,12 +251,15 @@ public class BackupRetentionPolicy {
             candidatesInCollection++;
 
             if (dryRun) {
-                // INFO, not DEBUG: this path is only reachable from BackupRetentionRunner's
-                // read-only preview() (never from a real run() - see its javadoc), so an
-                // "operator can see what WOULD be deleted" is exactly what this line is for.
-                // At the effective INFO log level, a DEBUG line here would be invisible,
-                // which would silently defeat that purpose - the operator would see nothing.
-                log.info("Backup retention: would delete {}", f.getAbsolutePath());
+                // Level is chosen by logCandidates, not by dryRun. preview() is served from
+                // an HTTP GET on every admin-UI refresh, and this line carries an absolute
+                // /data/... NFS path; with a backlog that is hundreds of INFO lines of
+                // infrastructure detail per page view.
+                if (logCandidates) {
+                    log.info("Backup retention: would delete {}", f.getAbsolutePath());
+                } else {
+                    log.debug("Backup retention: would delete {}", f.getAbsolutePath());
+                }
                 continue;
             }
 
@@ -208,9 +283,19 @@ public class BackupRetentionPolicy {
         }
 
         if (candidatesInCollection > 0) {
-            log.info("Backup retention: collection dir '{}': candidates={}, deleted={}, failed={}{}",
-                    collectionDir.getName(), candidatesInCollection, deletedInCollection, failedInCollection,
-                    dryRun ? " (dry-run, nothing actually deleted)" : "");
+            // Also gated on logCandidates: this fires in BOTH modes, so leaving it at INFO
+            // would still put one line per collection with a backlog into the log on every
+            // preview() (i.e. every admin-UI refresh).
+            String suffix = dryRun ? " (dry-run, nothing actually deleted)" : "";
+            if (logCandidates) {
+                log.info("Backup retention: collection dir '{}': candidates={}, deleted={}, failed={}{}",
+                        collectionDir.getName(), candidatesInCollection, deletedInCollection,
+                        failedInCollection, suffix);
+            } else {
+                log.debug("Backup retention: collection dir '{}': candidates={}, deleted={}, failed={}{}",
+                        collectionDir.getName(), candidatesInCollection, deletedInCollection,
+                        failedInCollection, suffix);
+            }
         }
     }
 
@@ -227,14 +312,17 @@ public class BackupRetentionPolicy {
      * mtime fallback: if the timestamp does not parse as a real calendar date/time (e.g. an
      * out-of-range value that still matches the digit-shape regex) this returns
      * {@code null} and the caller drops the file from consideration altogether. Falling back
-     * to mtime would let a malformed file sort as the newest, consume the keep-newest-1
-     * floor's only slot, and displace a genuine backup into the deletable set.
+     * to mtime would let a malformed file sort as the newest, consume a keep-newest
+     * floor slot, and displace a genuine backup into the deletable set.
      *
+     * @param f          the backup file
+     * @param backupFile  this collection directory's anchored filename pattern, as built by
+     *                    {@link #backupFilePattern(String)}
      * @return the write-time instant taken from the filename, or {@code null} if the name
      *         does not match or its timestamp is not a valid date/time
      */
-    private Instant timestampOf(File f) {
-        Matcher m = BACKUP_FILE.matcher(f.getName());
+    private Instant timestampOf(File f, Pattern backupFile) {
+        Matcher m = backupFile.matcher(f.getName());
         if (m.matches()) {
             try {
                 return LocalDateTime.parse(m.group(1), TS_FORMAT).atZone(ZoneId.systemDefault()).toInstant();
