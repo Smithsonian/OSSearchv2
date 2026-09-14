@@ -189,9 +189,12 @@ ossearch:
         duration-hours: 6
       retention:
         # Automatic backups older than this are always deleted on the next scheduled
-        # run. No on/off switch, no configurable keep-newest floor beyond the single
-        # most-recent automatic backup per collection (always protected), no dry-run.
+        # run. No on/off switch, no dry-run. Must be >= 1: startup fails on 0/negative
+        # rather than letting a typo delete every backup past the keep-newest floor.
         days: 90
+        # Keep-newest floor: the newest N backups of a collection survive regardless
+        # of age; only files behind this floor are eligible for age-based deletion.
+        count: 30
   edan-api:
     url: https://edandev.si.edu
     path: /metadata/v2.0/metadata/search.htm

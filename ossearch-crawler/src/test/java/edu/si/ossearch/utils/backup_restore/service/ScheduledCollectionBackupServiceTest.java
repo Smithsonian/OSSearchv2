@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -27,7 +28,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
-import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -65,7 +66,10 @@ class ScheduledCollectionBackupServiceTest {
     void setUp() {
         config = new ScheduledBackupConfig();
         config.setEnabled(true);
-        config.setMinFreeSpaceMb(0); // disk preflight must never flake this test on a constrained sandbox
+        // Disk preflight off by default so the happy-path tests cannot flake on a
+        // constrained sandbox. The two abort branches set it explicitly - see
+        // abortsWithLowDiskStatusAndStillRunsRetention.
+        config.setMinFreeSpaceMb(0);
         config.setWithCrawlSchedule(true);
         config.setIncludeUsers(false);
 
@@ -80,10 +84,11 @@ class ScheduledCollectionBackupServiceTest {
         lenient().when(leaseService.tryAcquire(anyString(), any())).thenReturn(true);
         lenient().when(statusService.recordStart(anyString(), any(Instant.class))).thenReturn(1L);
         lenient().when(retentionRunner.run()).thenReturn(new RetentionResult(false));
+        lenient().when(leaseService.extend(anyString(), any())).thenReturn(true);
     }
 
     private void stubBackupSucceeds(Long id) throws Exception {
-        when(backupRestoreService.backupCollection(eq(id), anyBoolean(), anyBoolean(), anyBoolean()))
+        when(backupRestoreService.backupCollection(eq(id), anyBoolean(), anyBoolean()))
                 .thenReturn(new ByteArrayInputStream(new byte[0]));
     }
 
@@ -96,19 +101,16 @@ class ScheduledCollectionBackupServiceTest {
 
         service.runScheduledBackup();
 
-        // The 4th argument must be `true`: the automatic marker it puts in the backup
-        // filename is the only thing that makes retention able to prune the scheduled
-        // job's own output (see BackupRetentionPolicy.BACKUP_FILE).
-        verify(backupRestoreService).backupCollection(1L, config.isWithCrawlSchedule(), config.isIncludeUsers(), true);
-        verify(backupRestoreService).backupCollection(2L, config.isWithCrawlSchedule(), config.isIncludeUsers(), true);
-        verify(backupRestoreService).backupCollection(3L, config.isWithCrawlSchedule(), config.isIncludeUsers(), true);
+        verify(backupRestoreService).backupCollection(1L, config.isWithCrawlSchedule(), config.isIncludeUsers());
+        verify(backupRestoreService).backupCollection(2L, config.isWithCrawlSchedule(), config.isIncludeUsers());
+        verify(backupRestoreService).backupCollection(3L, config.isWithCrawlSchedule(), config.isIncludeUsers());
     }
 
     @Test
     void continuesRemainingCollectionsWhenOneFails() throws Exception {
         when(collectionRepository.findAllCollectionIds()).thenReturn(List.of(1L, 2L, 3L));
         stubBackupSucceeds(1L);
-        when(backupRestoreService.backupCollection(eq(2L), anyBoolean(), anyBoolean(), anyBoolean()))
+        when(backupRestoreService.backupCollection(eq(2L), anyBoolean(), anyBoolean()))
                 .thenThrow(new RuntimeException("boom"));
         stubBackupSucceeds(3L);
 
@@ -116,9 +118,9 @@ class ScheduledCollectionBackupServiceTest {
 
         // Collection 1 and 3 must both have been attempted despite collection 2 blowing up
         // in between - a single failure must never short-circuit the loop.
-        verify(backupRestoreService).backupCollection(eq(1L), anyBoolean(), anyBoolean(), anyBoolean());
-        verify(backupRestoreService).backupCollection(eq(2L), anyBoolean(), anyBoolean(), anyBoolean());
-        verify(backupRestoreService).backupCollection(eq(3L), anyBoolean(), anyBoolean(), anyBoolean());
+        verify(backupRestoreService).backupCollection(eq(1L), anyBoolean(), anyBoolean());
+        verify(backupRestoreService).backupCollection(eq(2L), anyBoolean(), anyBoolean());
+        verify(backupRestoreService).backupCollection(eq(3L), anyBoolean(), anyBoolean());
 
         ArgumentCaptor<Integer> totalCaptor = ArgumentCaptor.forClass(Integer.class);
         ArgumentCaptor<Integer> succeededCaptor = ArgumentCaptor.forClass(Integer.class);
@@ -177,10 +179,19 @@ class ScheduledCollectionBackupServiceTest {
 
         service.runScheduledBackup();
 
-        verify(retentionRunner, times(1)).run();
-        verify(statusService).recordFinished(
+        // "After" is the assertion, not just "both happened": retention deletes files on the
+        // same volume the backups are being written to, so a retention pass that ran BEFORE
+        // the backup loop would prune against a stale listing that is missing the very
+        // backups this run just produced.
+        InOrder ordered = inOrder(backupRestoreService, leaseService, retentionRunner, statusService);
+        ordered.verify(backupRestoreService).backupCollection(eq(1L), anyBoolean(), anyBoolean());
+        ordered.verify(leaseService).extend(eq("test-host"), any());
+        ordered.verify(retentionRunner).run();
+        ordered.verify(statusService).recordFinished(
                 eq(1L), eq(1), eq(1), eq(0), eq(2), eq(1), eq(true),
                 eq(RetentionResult.Outcome.COMPLETED), isNull());
+
+        verify(retentionRunner, times(1)).run();
     }
 
     /**
@@ -232,12 +243,13 @@ class ScheduledCollectionBackupServiceTest {
     void skipsSecondInvocationWhileStillRunning() throws Exception {
         when(collectionRepository.findAllCollectionIds()).thenReturn(List.of(1L));
 
-        // While the first (and only) collection is being backed up, re-enter the
-        // scheduled entry point synchronously - exactly like a second cron trigger
-        // firing while the first run is still in progress, but deterministic since
-        // everything here runs on the calling thread (no real @Async/@Scheduled
-        // proxying happens when the bean is built with `new`).
-        when(backupRestoreService.backupCollection(eq(1L), anyBoolean(), anyBoolean(), anyBoolean()))
+        // Re-enter the scheduled entry point synchronously while the first (and only)
+        // collection is being backed up. NOTE this is NOT what the cron trigger does:
+        // Spring's ReschedulingRunnable only computes a cron task's next fire time after
+        // the current execution returns, so a cron @Scheduled method cannot overlap itself
+        // and this guard is unreachable from that path. What is covered here is a direct
+        // re-entrant call - the only way the guard can actually fire.
+        when(backupRestoreService.backupCollection(eq(1L), anyBoolean(), anyBoolean()))
                 .thenAnswer(invocation -> {
                     service.runScheduledBackup();
                     return new ByteArrayInputStream(new byte[0]);
@@ -249,5 +261,102 @@ class ScheduledCollectionBackupServiceTest {
         // could acquire the lease or touch the repository a second time.
         verify(collectionRepository, times(1)).findAllCollectionIds();
         verify(leaseService, times(1)).tryAcquire(anyString(), any());
+    }
+
+    /**
+     * The low-disk abort's load-bearing invariant: retention MUST still run. Pruning is the
+     * only thing that can free space on the volume, so a version of this branch that
+     * returned early would make every subsequent nightly run find the same condition and
+     * abort again - a deadlock that never recovers on its own.
+     */
+    @Test
+    void abortsWithLowDiskStatusAndStillRunsRetention() {
+        // A threshold no filesystem can satisfy, so the preflight is guaranteed to trip.
+        config.setMinFreeSpaceMb(Long.MAX_VALUE / (1024L * 1024L));
+
+        RetentionResult retentionResult = new RetentionResult(false);
+        retentionResult.recordDeleted(new File("pruned-to-free-space.json"));
+        when(retentionRunner.run()).thenReturn(retentionResult);
+
+        service.runScheduledBackup();
+
+        verify(retentionRunner, times(1)).run();
+        verify(statusService).recordAborted(eq(1L),
+                eq(BackupJobStatusService.STATUS_ABORTED_LOW_DISK), anyString(),
+                eq(1), eq(0), eq(false), eq(RetentionResult.Outcome.COMPLETED), isNull());
+        verifyNoInteractions(backupRestoreService, collectionRepository);
+        // The lease is deliberately held rather than released on an abort: an abort takes
+        // milliseconds, and releasing lets a second node with enabled=true mistakenly set
+        // pick the window straight back up and run the whole job again.
+        verify(leaseService, never()).release(anyString());
+    }
+
+    /**
+     * A missing/unmounted crawlDir must abort with its OWN status - the UI badge otherwise
+     * says "low disk" while the real problem is a dead NFS mount - and must NOT run
+     * retention: there is nothing safely enumerable under an unmounted path.
+     */
+    @Test
+    void abortsWithCrawlDirUnavailableStatusAndSkipsRetention() {
+        service.crawlDir = new File(crawlDir, "definitely-not-mounted");
+
+        service.runScheduledBackup();
+
+        verify(statusService).recordAborted(eq(1L),
+                eq(BackupJobStatusService.STATUS_ABORTED_CRAWL_DIR_UNAVAILABLE), anyString());
+        verifyNoInteractions(retentionRunner, backupRestoreService, collectionRepository);
+        verify(leaseService, never()).release(anyString());
+    }
+
+    /**
+     * A night on which every collection failed (read-only remount, or an export regression)
+     * has produced nothing, so pruning 90-day-old backups buys nothing and is irreversible.
+     * Retention must be skipped - the opposite call to the low-disk abort, where pruning is
+     * the only thing that can clear the condition.
+     */
+    @Test
+    void skipsRetentionWhenEveryCollectionFailed() throws Exception {
+        when(collectionRepository.findAllCollectionIds()).thenReturn(List.of(1L, 2L));
+        when(backupRestoreService.backupCollection(anyLong(), anyBoolean(), anyBoolean()))
+                .thenThrow(new RuntimeException("read-only filesystem"));
+
+        service.runScheduledBackup();
+
+        verifyNoInteractions(retentionRunner);
+        verify(statusService).recordFinished(eq(1L), eq(2), eq(0), eq(2),
+                eq(0), eq(0), eq(false), eq(RetentionResult.Outcome.SKIPPED),
+                eq("all 2 collections failed this run"));
+        verify(leaseService).release("test-host");
+    }
+
+    /** A run with zero collections is not a systemic failure, so retention still runs. */
+    @Test
+    void runsRetentionWhenThereAreNoCollectionsAtAll() {
+        when(collectionRepository.findAllCollectionIds()).thenReturn(List.of());
+
+        service.runScheduledBackup();
+
+        verify(retentionRunner, times(1)).run();
+    }
+
+    /**
+     * A run that outlives lease.duration-hours has lost the mutex; another node may already
+     * be pruning the same NFS directories. The destructive step must not proceed on an
+     * unproven lease.
+     */
+    @Test
+    void skipsRetentionWhenTheLeaseWasLostDuringTheRun() throws Exception {
+        when(collectionRepository.findAllCollectionIds()).thenReturn(List.of(1L));
+        stubBackupSucceeds(1L);
+        when(leaseService.extend(anyString(), any())).thenReturn(false);
+
+        service.runScheduledBackup();
+
+        verifyNoInteractions(retentionRunner);
+        // SKIPPED, not FAILED and not NULL: retention did not break, and it did not quietly
+        // do nothing either - it was deliberately not run, and the audit row must say so.
+        verify(statusService).recordFinished(eq(1L), eq(1), eq(1), eq(0),
+                eq(0), eq(0), eq(false), eq(RetentionResult.Outcome.SKIPPED),
+                eq("backup job lease was lost before the retention step"));
     }
 }

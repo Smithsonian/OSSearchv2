@@ -36,9 +36,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * {@code ScheduledBackupExecutorConfig#backupTaskScheduler()}) rather than the
  * default scheduler thread, so a long-running backup/retention pass cannot
  * starve or delay {@code SchedulerHeartbeatService.beat()} or any other
- * {@code @Scheduled} task sharing the default scheduler. This deterministically
- * moves the job off the shared thread - unlike the {@code @Async} approach this
- * replaced, there is no bean-post-processor registration-order race to lose.
+ * {@code @Scheduled} task sharing the default scheduler.
  *
  * @author jbirkhimer
  */
@@ -64,8 +62,8 @@ public class ScheduledCollectionBackupService {
     File crawlDir;
 
     /**
-     * Re-entrancy guard against overlapping runs. See {@link #runScheduledBackup()}
-     * for why this is required in addition to the lease and the executor config.
+     * Re-entrancy guard against overlapping runs. Not the primary defence and not
+     * reachable from the cron trigger - see {@link #runScheduledBackup()}.
      */
     private final AtomicBoolean running = new AtomicBoolean(false);
 
@@ -82,10 +80,12 @@ public class ScheduledCollectionBackupService {
      */
     @Scheduled(cron = "${ossearch.backup.scheduled.cron:0 30 3 * * ?}", scheduler = "backupTaskScheduler")
     public void runScheduledBackup() {
-        // Confirms, in production logs, which thread actually ran this: it must read
-        // "backup-job-*" (the dedicated backupTaskScheduler), never the shared scheduler
-        // thread that SchedulerHeartbeatService.beat() and the other @Scheduled jobs rely on.
-        log.info("Scheduled collection backup: triggered on thread {}", Thread.currentThread().getName());
+        // Thread name is logged for operator context only. It is deliberately NOT treated
+        // as a self-check: "backup-job-*" here proves nothing about isolation, since a
+        // mis-wired context in which backupTaskScheduler became the app's ONLY TaskScheduler
+        // would print exactly the same thing while every other @Scheduled job also ran on it.
+        // ScheduledBackupSchedulerWiringTest is what actually pins the isolation.
+        log.debug("Scheduled collection backup: triggered on thread {}", Thread.currentThread().getName());
 
         if (!config.isEnabled()) {
             // Silent: this fires nightly on every node, and on most nodes the
@@ -93,13 +93,13 @@ public class ScheduledCollectionBackupService {
             return;
         }
 
-        // backupTaskScheduler is a dedicated single-thread ThreadPoolTaskScheduler, so Spring
-        // serializes fires of this method the same way it does for any @Scheduled method on
-        // the default scheduler: a second cron fire while a run is in progress simply queues
-        // behind the first rather than running concurrently or being silently discarded (as
-        // the old @Async + queueCapacity(0) + DiscardPolicy executor could do). This guard is
-        // therefore no longer a race against a possibly-losing @Async proxy - it is a genuine,
-        // reachable re-entrancy check that also documents and logs the skip.
+        // Belt-and-braces only: this guard is UNREACHABLE for the cron trigger. Spring's
+        // ReschedulingRunnable computes a cron task's next fire time only after the current
+        // execution returns, so a cron @Scheduled method cannot overlap itself no matter how
+        // long a run takes - there is no queued second fire waiting behind this one either.
+        // The guard is kept because it costs nothing and would catch any future caller that
+        // invokes this method directly (as ScheduledCollectionBackupServiceTest does), but do
+        // not rely on it as the defence against concurrent runs: the lease is that defence.
         if (!running.compareAndSet(false, true)) {
             log.warn("Scheduled collection backup: previous run is still in progress, skipping this trigger");
             return;
@@ -125,6 +125,15 @@ public class ScheduledCollectionBackupService {
 
         log.info("Scheduled collection backup: starting run on {}", hostname);
         Long runId = statusService.recordStart(hostname, Instant.now());
+
+        // Set to false by the abort paths. An abort decides nothing about the backup
+        // window itself - it records that this window has been CLAIMED and could not be
+        // served - so the lease is deliberately held until it expires on its own rather
+        // than released here. Releasing it immediately (an abort takes milliseconds) means
+        // that with `enabled=true` mistakenly set on two nodes and a little cron skew, node
+        // B walks straight into the lease this node just dropped and runs the whole job a
+        // second time, which is exactly what the mutex exists to prevent.
+        boolean releaseLease = true;
         try {
             // crawlDir.getUsableSpace() returns 0 for a path that does not exist or is not
             // mounted (rather than throwing), which would otherwise misreport "the NFS mount
@@ -134,7 +143,9 @@ public class ScheduledCollectionBackupService {
             if (!crawlDir.isDirectory()) {
                 log.error("Scheduled collection backup: aborting run on {}, crawlDir {} does not exist or is not a directory (NFS mount likely unavailable)",
                         hostname, crawlDir);
-                statusService.recordAborted(runId, "CRAWL_DIR_UNAVAILABLE");
+                statusService.recordAborted(runId, BackupJobStatusService.STATUS_ABORTED_CRAWL_DIR_UNAVAILABLE,
+                        "crawlDir " + crawlDir + " does not exist or is not a directory");
+                releaseLease = false;
                 return;
             }
 
@@ -155,9 +166,12 @@ public class ScheduledCollectionBackupService {
                 // Retention only deletes existing files, so it needs no free space itself.
                 RetentionResult retention = retentionRunner.run();
                 logIfRetentionFailed(hostname, retention);
-                statusService.recordAborted(runId, "LOW_DISK_SPACE",
+                statusService.recordAborted(runId, BackupJobStatusService.STATUS_ABORTED_LOW_DISK,
+                        "usable space " + usableSpaceBytes + " bytes is below configured minimum "
+                                + minFreeSpaceBytes + " bytes",
                         retention.getDeletedCount(), retention.getFailedDeleteCount(), retention.isDryRun(),
                         retention.getOutcome(), retention.getErrorMessage());
+                releaseLease = false;
                 return;
             }
 
@@ -169,7 +183,7 @@ public class ScheduledCollectionBackupService {
 
             for (Long id : collectionIds) {
                 try (ByteArrayInputStream ignored = backupRestoreService.backupCollection(
-                        id, config.isWithCrawlSchedule(), config.isIncludeUsers(), true)) {
+                        id, config.isWithCrawlSchedule(), config.isIncludeUsers())) {
                     // The returned stream is discarded: backupCollection() already
                     // wrote the backup file to disk before constructing this
                     // stream, which exists only to serve the HTTP download path.
@@ -192,8 +206,44 @@ public class ScheduledCollectionBackupService {
                 // per-collection noise: this pattern usually means the NFS mount
                 // is gone, unmounted, or has gone read-only, not that N unrelated
                 // collections independently broke at the same time.
-                log.error("Scheduled collection backup: ALL {} collections failed on {} - this looks like a systemic failure (e.g. crawlDir/NFS mount unavailable or read-only), not per-collection errors",
+                //
+                // Retention is SKIPPED in this case, and the skip is the point: pruning is
+                // irreversible, and a night that produced zero new backups has bought
+                // nothing to justify deleting 90-day-old ones. Left to run, a read-only
+                // remount (or any regression that breaks every export) would quietly eat
+                // the backup history one night at a time while every run still reported
+                // retention COMPLETED. Note this is the OPPOSITE call to the low-disk abort
+                // above, which must still prune: there, pruning is the only thing that can
+                // clear the condition, so skipping it would deadlock the job forever. Here
+                // nothing is unblocked by deleting, so the safe default is to keep the files.
+                log.error("Scheduled collection backup: ALL {} collections failed on {} - this looks like a systemic failure (e.g. crawlDir/NFS mount unavailable or read-only), not per-collection errors; SKIPPING retention so old backups are not pruned on a run that produced none",
                         total, hostname);
+                RetentionResult retention = RetentionResult.skipped(
+                        "all " + total + " collections failed this run");
+                statusService.recordFinished(runId, total, succeeded, failed,
+                        retention.getDeletedCount(), retention.getFailedDeleteCount(), retention.isDryRun(),
+                        retention.getOutcome(), retention.getErrorMessage());
+                return;
+            }
+
+            // The lease must still be ours before the one destructive step in this job.
+            // A run that outlasts lease.duration-hours has already lost the mutex, and
+            // another node may by now be backing up and pruning the same NFS directories;
+            // two concurrent prunes each satisfying the keep-newest floor from their own
+            // stale listing can delete past it between them. extend() re-proves ownership
+            // and pushes the expiry out for the retention pass itself.
+            if (!leaseService.extend(hostname, Duration.ofHours(config.getLease().getDurationHours()))) {
+                log.error("Scheduled collection backup: lease lost during the run on {} (it outlived lease.duration-hours) - SKIPPING retention; another node may already own this backup window",
+                        hostname);
+                // recordFinished, not recordAborted: the collection backups genuinely
+                // finished and their counts are real. Only the destructive step was
+                // skipped, and the SKIPPED retention outcome is what carries that.
+                RetentionResult retention = RetentionResult.skipped(
+                        "backup job lease was lost before the retention step");
+                statusService.recordFinished(runId, total, succeeded, failed,
+                        retention.getDeletedCount(), retention.getFailedDeleteCount(), retention.isDryRun(),
+                        retention.getOutcome(), retention.getErrorMessage());
+                return;
             }
 
             RetentionResult retention = retentionRunner.run();
@@ -207,7 +257,11 @@ public class ScheduledCollectionBackupService {
             log.error("Scheduled collection backup: run on {} failed unexpectedly", hostname, e);
             statusService.recordFailed(runId, e);
         } finally {
-            leaseService.release(hostname);
+            if (releaseLease) {
+                // release() is owner-scoped, so this is a no-op if the lease was lost
+                // mid-run and has since been taken by another node.
+                leaseService.release(hostname);
+            }
         }
     }
 
