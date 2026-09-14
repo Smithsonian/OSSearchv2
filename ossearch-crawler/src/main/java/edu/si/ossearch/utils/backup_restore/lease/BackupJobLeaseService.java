@@ -1,10 +1,11 @@
 package edu.si.ossearch.utils.backup_restore.lease;
 
+import edu.si.ossearch.utils.backup_restore.config.ScheduledBackupConfig;
+import edu.si.ossearch.utils.backup_restore.repository.BackupJobLeaseRepository;
 import jakarta.annotation.PostConstruct;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataAccessException;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 import java.net.InetAddress;
@@ -19,55 +20,83 @@ import java.time.Duration;
  * retention step DELETES files on a shared NFS volume: double-execution
  * would mean two nodes concurrently pruning/writing the same backup
  * directories.
+ * <p>
+ * The table itself is a JPA entity ({@code BackupJobLease}) created by
+ * {@code ddl-auto: update} like every other table in the application; the atomicity
+ * argument lives in {@link BackupJobLeaseRepository}, which is where the actual
+ * statements are.
  *
  * @author jbirkhimer
  */
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class BackupJobLeaseService {
 
     private static final String LOCK_NAME = "scheduled_collection_backup";
 
-    @Autowired
-    private JdbcTemplate jdbcTemplate;
+    private final BackupJobLeaseRepository leaseRepository;
+    private final ScheduledBackupConfig config;
 
+    /**
+     * Seeds the single mutex row, and ONLY on a node where the scheduled backup job is
+     * actually enabled - a node that will never take the lease has no reason to write
+     * to the table on every boot.
+     * <p>
+     * The bean itself is deliberately NOT {@code @ConditionalOnProperty}: it is injected
+     * as a mandatory dependency by {@code ScheduledCollectionBackupService} (a final
+     * constructor field), so making the bean conditional would abort context startup on
+     * every node with the feature off. Conditioning the startup WORK gets the same
+     * saving without that.
+     * <p>
+     * Never throws. Status/lease bookkeeping must not be able to break application
+     * startup; a failure here is logged at ERROR and {@link #tryAcquire} will then fail
+     * closed (0 rows updated, no lease, no run) rather than run unprotected.
+     */
     @PostConstruct
-    void createTableIfMissing() {
-        // CREATE TABLE IF NOT EXISTS instead of a JPA entity so behavior does
-        // not depend on the hibernate ddl-auto setting of the environment.
-        jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS backup_job_lease (" +
-                "lock_name VARCHAR(64) NOT NULL PRIMARY KEY, " +
-                "owner VARCHAR(255) NULL, " +
-                "expires_at TIMESTAMP(3) NULL)");
-        jdbcTemplate.update("INSERT IGNORE INTO backup_job_lease (lock_name) VALUES (?)", LOCK_NAME);
+    void seedLeaseRow() {
+        if (!config.isEnabled()) {
+            return;
+        }
+        try {
+            leaseRepository.seed(LOCK_NAME);
+        } catch (DataAccessException e) {
+            log.error("failed to seed backup job lease row {}: {}", LOCK_NAME, e.getMessage(), e);
+        }
     }
 
     /**
      * Attempts to acquire the lease for {@code owner} for {@code leaseDuration}.
-     * <p>
-     * This is deliberately an atomic conditional UPDATE against the single
-     * primary-key row, NOT a read-then-write upsert. Two concurrent UPDATEs
-     * against the same primary-key row serialize on the InnoDB row lock: one
-     * transaction wins and commits first, and the loser's UPDATE only then
-     * re-evaluates the WHERE clause (against the now-committed row) — by
-     * which point {@code owner} is no longer NULL and {@code expires_at} is
-     * in the future, so the WHERE clause matches nothing and the loser's
-     * UPDATE affects 0 rows. This is what makes double-execution across two
-     * app servers impossible even if the {@code enabled} config flag is
-     * wrongly set on both hosts.
+     *
+     * @return true only if this node now provably holds the lease
      */
     public boolean tryAcquire(String owner, Duration leaseDuration) {
         try {
-            int updated = jdbcTemplate.update(
-                    "UPDATE backup_job_lease " +
-                    "   SET owner = ?, expires_at = CURRENT_TIMESTAMP(3) + INTERVAL ? SECOND " +
-                    " WHERE lock_name = ? " +
-                    "   AND (owner IS NULL OR expires_at < CURRENT_TIMESTAMP(3))",
-                    owner, leaseDuration.getSeconds(), LOCK_NAME);
-            return updated == 1;
+            return leaseRepository.acquire(owner, leaseDuration.getSeconds(), LOCK_NAME) == 1;
         } catch (DataAccessException e) {
             // Fail safe: if we can't prove we hold the lease, never run.
             log.error("backup job lease acquisition failed for owner {}: {}", owner, e.getMessage(), e);
+            return false;
+        }
+    }
+
+    /**
+     * Pushes the lease expiry out by a further {@code leaseDuration} for a lease this
+     * node still holds. Callers must re-check this before any destructive step (the
+     * retention delete pass) of a long run: a run that outlives its lease has already
+     * lost the mutex, and continuing to delete files on the shared NFS volume would race
+     * whichever node has since taken over.
+     *
+     * @return true if the lease was still held and has been extended; false if it was
+     *         lost (expired, taken by another node, or the UPDATE failed), in which case
+     *         the caller must stop.
+     */
+    public boolean extend(String owner, Duration leaseDuration) {
+        try {
+            return leaseRepository.extend(owner, leaseDuration.getSeconds(), LOCK_NAME) == 1;
+        } catch (DataAccessException e) {
+            // Same fail-safe rule as tryAcquire: unproven means not held.
+            log.error("backup job lease extension failed for owner {}: {}", owner, e.getMessage(), e);
             return false;
         }
     }
@@ -80,9 +109,7 @@ public class BackupJobLeaseService {
      */
     public void release(String owner) {
         try {
-            jdbcTemplate.update(
-                    "UPDATE backup_job_lease SET owner = NULL, expires_at = NULL WHERE lock_name = ? AND owner = ?",
-                    LOCK_NAME, owner);
+            leaseRepository.release(owner, LOCK_NAME);
         } catch (DataAccessException e) {
             log.error("backup job lease release failed for owner {}: {}", owner, e.getMessage(), e);
         }
