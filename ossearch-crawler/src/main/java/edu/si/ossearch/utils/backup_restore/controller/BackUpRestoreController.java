@@ -32,6 +32,7 @@ import java.nio.charset.StandardCharsets;
 import java.io.File;
 import java.text.SimpleDateFormat;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.*;
 
 /**
@@ -63,10 +64,19 @@ public class BackUpRestoreController {
     @GetMapping(value = "/backup/scheduled/status")
     // Admin-gated: the response includes lastRun.errorMessage, which can be a raw exception
     // message (absolute NFS paths, JDBC/Hibernate internals). /api/** is only .authenticated()
-    // by default (see WebSecurityConfig), and the UI only exposes Backup/Restore to admins, so
-    // this endpoint should not be reachable by any other authenticated user.
+    // by default (see WebSecurityConfig), so this @PreAuthorize is the only thing keeping the
+    // endpoint away from other authenticated users. The UI matches this gate rather than
+    // relying on it: both the /backupRestore route and the per-collection backupRestore child
+    // route carry beforeEnter: isAdmin, and ScheduledBackupStatus is rendered under
+    // v-if="isAdmin" in both views, so a non-admin never issues this request in the first
+    // place. Keep the two in sync - relaxing either side alone is a regression.
     @PreAuthorize("hasRole('ROLE_ADMIN')")
-    public ResponseEntity<Map<String, Object>> scheduledBackupStatus() {
+    public ResponseEntity<Map<String, Object>> scheduledBackupStatus(
+            // The retention preview walks the whole crawlDir over NFS (one metadata round trip
+            // per collection), so it is opt-in rather than a cost every caller of this status
+            // endpoint pays. The cheap "days" value is always returned.
+            @Parameter(description = "also compute which backup files the next retention sweep would prune (walks crawlDir)")
+            @RequestParam(value = "includeRetentionPreview", required = false, defaultValue = "false") boolean includeRetentionPreview) {
         Map<String, Object> status = new LinkedHashMap<>();
         try {
             // "enabledOnThisNode" is honestly node-local: enabled is per-host by design (true on
@@ -98,7 +108,13 @@ public class BackUpRestoreController {
                 LocalDateTime next = CronExpression.parse(scheduledBackupConfig.getCron())
                         .next(LocalDateTime.now());
                 if (next != null) {
-                    nextRun = next.toString();
+                    // Emit an explicit offset. CronExpression yields a zoneless LocalDateTime
+                    // whose toString() the browser would parse as browser-local time, while
+                    // lastRun.startedAt/finishedAt are java.sql.Timestamps serialized as real
+                    // UTC instants - two reference frames in one <dl>. Stamping the server's
+                    // zone offset on here makes both values absolute, so new Date(...) in the
+                    // UI renders them in the same (viewer-local) frame.
+                    nextRun = next.atZone(ZoneId.systemDefault()).toOffsetDateTime().toString();
                     if (!scheduledBackupConfig.isEnabled()) {
                         nextRunNote = "scheduled backups are not enabled on this node, so this time will not actually run";
                     }
@@ -112,7 +128,7 @@ public class BackUpRestoreController {
             status.put("nextRunNote", nextRunNote);
 
             status.put("lastRun", backupJobStatusService.getLastRun().orElse(null));
-            status.put("retention", retentionStatus());
+            status.put("retention", retentionStatus(includeRetentionPreview));
         } catch (Exception e) {
             log.error("Problem getting scheduled backup status!", e);
             status.put("error", e.getMessage());
@@ -129,15 +145,22 @@ public class BackUpRestoreController {
     /**
      * Builds the "retention" block of the scheduled backup status response.
      * <p>
-     * Note that {@code preview()} walks the whole crawlDir on every call. That is acceptable
-     * synchronously here because this endpoint is admin-only (see {@code @PreAuthorize}
-     * above) and the UI loads it on demand rather than polling it.
+     * {@code preview()} walks the whole crawlDir on every call - one NFS metadata round trip
+     * per collection, uncached. It is therefore only performed when the caller explicitly asks
+     * for it via {@code includePreview}; otherwise this returns just the configured retention
+     * window, which is a plain config read. When the preview is skipped the candidate keys are
+     * omitted entirely rather than sent as zeros, so the UI can tell "not asked for" apart
+     * from "nothing to prune".
      * <p>
      * Never throws: a retention preview problem must not fail the status endpoint.
      */
-    private Map<String, Object> retentionStatus() {
+    private Map<String, Object> retentionStatus(boolean includePreview) {
         Map<String, Object> retention = new LinkedHashMap<>();
         retention.put("days", scheduledBackupConfig.getRetention().getDays());
+
+        if (!includePreview) {
+            return retention;
+        }
 
         RetentionResult preview = null;
         try {

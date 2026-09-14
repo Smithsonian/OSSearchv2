@@ -9,7 +9,7 @@
     </div>
   </div>
 
-  <ScheduledBackupStatus />
+  <ScheduledBackupStatus v-if="isAdmin" />
 
   <div v-if="!loading" class="card mt-4 mb-4">
     <div class="card-header">
@@ -711,6 +711,17 @@ export default {
           }
         }
       },
+    },
+  },
+  computed: {
+    currentUser() {
+      return this.$store.state.auth.user;
+    },
+    isAdmin() {
+      if (this.currentUser && this.currentUser["roles"]) {
+        return this.currentUser["roles"].includes("ROLE_ADMIN");
+      }
+      return false;
     },
   },
   methods: {

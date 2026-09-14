@@ -6,7 +6,7 @@
   <div class="container-fluid px-4">
     <Breadcrumb />
 
-    <ScheduledBackupStatus />
+    <ScheduledBackupStatus v-if="isAdmin" />
 
     <div class="card mb-3">
       <div class="card-header">
