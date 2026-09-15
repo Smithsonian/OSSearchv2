@@ -95,9 +95,9 @@ public class BackupRetentionPolicy {
      * front of it.
      */
     private final int keepNewestCount;
-    // No longer a user-facing configuration option: retention always runs. This now only
-    // distinguishes an internal preview() call (true, never deletes) from a real run()
-    // call (false, actually deletes).
+    // Not a user-facing configuration option - retention always runs. This distinguishes
+    // an internal preview() call (true, never deletes) from a real run() call (false,
+    // actually deletes), and nothing else.
     private final boolean dryRun;
     /**
      * Whether each individual candidate, and the per-collection summary, are logged at INFO.

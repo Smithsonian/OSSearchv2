@@ -121,9 +121,9 @@ public class ScheduledBackupConfig {
          * Enforced by {@link BackupRetentionPolicy}, which keeps the newest {@code count}
          * backups of a collection and applies the {@link #days} rule only to the files
          * behind them - the count half of issue #16's "by count and/or age" retention.
-         * Since manual and scheduled backups are no longer distinguishable on disk, this
-         * floor is also what keeps an operator's ad-hoc "before I change something risky"
-         * backup from aging out.
+         * Manual and scheduled backups are not distinguishable on disk, so this floor is
+         * also what keeps an operator's ad-hoc "before I change something risky" backup
+         * from aging out.
          */
         @Min(1)
         @Max(10000)
