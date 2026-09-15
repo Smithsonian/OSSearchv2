@@ -13,6 +13,9 @@ import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 
 import jakarta.persistence.*;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.HashSet;
@@ -40,6 +43,49 @@ public class Collection {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private long id;
 
+    /**
+     * The collection name is not only a label: {@code BackupRestoreServiceImpl} concatenates it
+     * into a filesystem path as {@code <crawlDir>/<name>_<id>/backup/...}, so a name that is
+     * hostile to a path segment is a real defect (backups written outside {@code crawlDir},
+     * or nested a level deeper than {@code BackupRetentionPolicy} sweeps, so they are never
+     * pruned).
+     * <p>
+     * The constraints below are therefore a <b>denylist of path-hostile input only</b>, not an
+     * allowlist of "tidy" names. Bean validation on an entity fires on pre-update as well as
+     * pre-insert, so anything rejected here would permanently block operators from editing an
+     * existing collection whose name predates the rule (and would break restoring an older
+     * backup). Spaces, dots, ampersands and non-ASCII letters are merely ugly in a path and are
+     * deliberately allowed; slashes, control characters and {@code ..} are the actual
+     * vulnerability. Do not tighten this into something like {@code ^[A-Za-z0-9_-]+$}.
+     */
+    @NotBlank(message = "A collection name is required and cannot be blank.")
+    // Filesystem constraint, not a display one: the on-disk directory is "<name>_<id>" and most
+    // filesystems cap a single path component at 255 bytes, so 200 leaves room for the "_<id>"
+    // suffix (and for multi-byte UTF-8 characters costing more than one byte each).
+    //
+    // Known, deliberate schema asymmetry: Hibernate derives DDL length from @Size, so a FRESH
+    // schema gets name VARCHAR(200) while every pre-existing database keeps the VARCHAR(255)
+    // it was created with - hibernate.ddl-auto=update is additive and never narrows an
+    // existing column. This is left unresolved on purpose rather than "fixed":
+    //   - Narrowing the live column would need a migration that could truncate names longer
+    //     than 200 characters, which existing rows may legitimately have since they predate
+    //     this constraint (and the @Pattern comment above explains why old names must stay
+    //     editable rather than be rejected).
+    //   - Widening this to @Size(max = 255) would break the "<name>_<id>" budget the 200 was
+    //     chosen for.
+    // The 200-character rule is enforced by bean validation on every insert and update
+    // regardless, so the wider legacy column is unreachable slack, not a second limit.
+    @Size(max = 200, message = "A collection name cannot be longer than 200 characters because it becomes a directory name on disk.")
+    // Breakdown of the regex, clause by clause:
+    //   (?!\s)            - no leading whitespace
+    //   (?!\.{1,2}$)      - the name is not "." or "..", which would resolve to the parent or
+    //                       current directory instead of a new one
+    //   [^\p{Cntrl}/\\]+  - one or more characters that are neither control characters
+    //                       (\p{Cntrl} is [\x00-\x1F\x7F], covering NUL, \n and \r, which
+    //                       produce unmatchable filenames) nor a "/" or "\" path separator
+    //   (?<!\s)$          - no trailing whitespace
+    @Pattern(regexp = "^(?!\\s)(?!\\.{1,2}$)[^\\p{Cntrl}/\\\\]+(?<!\\s)$",
+            message = "A collection name cannot contain slashes or control characters, cannot be \".\" or \"..\", and cannot start or end with whitespace, because it is used as a directory name on disk.")
     private String name;
 
     @Column(columnDefinition = "TEXT")

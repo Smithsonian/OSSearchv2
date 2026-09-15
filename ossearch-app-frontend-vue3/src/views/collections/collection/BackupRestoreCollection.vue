@@ -9,6 +9,8 @@
     </div>
   </div>
 
+  <ScheduledBackupStatus v-if="isAdmin" />
+
   <div v-if="!loading" class="card mt-4 mb-4">
     <div class="card-header">
       <i class="fas fa-cloud-download-alt me-1"></i>
@@ -625,6 +627,7 @@ import CollectionService from "../../../services/collection.service";
 import api from "@/services/api";
 import Datatable from "../../../components/table/Datatable.vue";
 import FileDropZone from "../../../components/FileDropZone.vue";
+import ScheduledBackupStatus from "../../../components/backup/ScheduledBackupStatus.vue";
 
 export default {
   name: "BackupRestoreCollection",
@@ -633,6 +636,7 @@ export default {
     FileDropZone,
     Datatable,
     Modal,
+    ScheduledBackupStatus,
   },
   data() {
     return {
@@ -707,6 +711,17 @@ export default {
           }
         }
       },
+    },
+  },
+  computed: {
+    currentUser() {
+      return this.$store.state.auth.user;
+    },
+    isAdmin() {
+      if (this.currentUser && this.currentUser["roles"]) {
+        return this.currentUser["roles"].includes("ROLE_ADMIN");
+      }
+      return false;
     },
   },
   methods: {
