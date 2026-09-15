@@ -36,3 +36,26 @@ and break the build. The project-specific `ossearch.skipTests` name avoids that 
 an explicit `-Dossearch.skipTests=false` opts in only the module you actually asked for. See
 the comment on the `ossearch.skipTests` property in the root `pom.xml` for the authoritative
 version of this explanation.
+
+### Database-backed integration tests (opt-in)
+
+Most tests run without a database. The exception is
+`BackupJobMySqlIntegrationTest`, which exercises the hand-written native SQL behind the
+scheduled-backup lease and run-status tables — `INSERT IGNORE`, the
+`DATE_ADD(..., INTERVAL :seconds SECOND)` expiry arithmetic, and the derived
+`findFirstByOrderByStartedAtDescIdDesc` query. None of that can be verified against a mock,
+and the rest of the backup suite mocks those repositories.
+
+It is skipped unless you ask for it, so a normal run on a machine with no database still
+passes. To run it against the `docker-compose` MySQL:
+
+```
+docker compose up -d db
+```
+```
+./mvnw -pl ossearch-crawler test -Dossearch.skipTests=false -Dossearch.it.mysql=true
+```
+
+It is safe to point at a populated database: every test is transactional and rolls back, and
+it runs with `ddl-auto=none` so it cannot alter the schema. The connection details are in the
+test's `@TestPropertySource` and default to the `docker-compose` database on port 3309.
