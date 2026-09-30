@@ -1,0 +1,116 @@
+#!/bin/bash
+#
+# ossearch-auto-reboot — monthly maintenance reboot of an OSSearch server,
+# deferred while it is unsafe.
+#
+# Started by ossearch-auto-reboot.timer on the last day of the month. Polls
+# until every configured safety check passes, then reboots. If the checks have
+# not passed within MAX_WAIT_HOURS it gives up for this month WITHOUT rebooting.
+# An in-flight crawl is never interrupted.
+#
+# Safety checks (each is skipped when its variable is empty):
+#   CRAWL_CHECK_URL  crawler's /api/scheduler/shutdownCheck must answer "true"
+#                    (no Quartz crawl job executing). Set on the hosts a crawl
+#                    depends on: the crawl server and the Solr leader the
+#                    crawls index into. It must reach the node that runs the
+#                    scheduler directly, NOT a load-balanced name: a
+#                    non-scheduler node always answers "true".
+#   PEER_URL         another server that must be up first (e.g. the other Solr
+#                    server's ping), so a pair is never down at the same time.
+#
+# Anything other than a clean pass (endpoint unreachable, HTTP error, odd body)
+# counts as "not safe yet" and is retried — a network blip must not turn into a
+# reboot in the middle of a crawl.
+#
+# Configuration: /etc/sysconfig/ossearch-auto-reboot (see the .sysconfig file).
+#
+# Usage:
+#   ossearch-auto-reboot            wait until safe, then reboot (what the timer runs)
+#   ossearch-auto-reboot --dry-run  run the checks once, report, never reboot
+#
+set -uo pipefail
+
+CONF=/etc/sysconfig/ossearch-auto-reboot
+# shellcheck source=/dev/null
+[ -r "${CONF}" ] && . "${CONF}"
+
+CRAWL_CHECK_URL="${CRAWL_CHECK_URL:-}"
+PEER_URL="${PEER_URL:-}"
+REQUIRED_UNITS="${REQUIRED_UNITS:-}"
+CHECK_INTERVAL_MINUTES="${CHECK_INTERVAL_MINUTES:-10}"
+MAX_WAIT_HOURS="${MAX_WAIT_HOURS:-20}"
+CURL_TIMEOUT="${CURL_TIMEOUT:-15}"
+
+TAG=ossearch-auto-reboot
+
+log() {
+    logger -t "${TAG}" -p "daemon.${2:-notice}" -- "$1"
+    echo "${TAG}: $1" >&2
+}
+
+# Prints the reason when unsafe; returns 0 when safe.
+crawls_idle() {
+    [ -z "${CRAWL_CHECK_URL}" ] && return 0
+    local body rc
+    body=$(curl -fsS --max-time "${CURL_TIMEOUT}" "${CRAWL_CHECK_URL}" 2>&1)
+    rc=$?
+    if [ ${rc} -ne 0 ]; then
+        echo "crawl check unreachable (curl rc=${rc}: ${body})"
+        return 1
+    fi
+    case "$(printf '%s' "${body}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
+        true)  return 0 ;;
+        false) echo "crawl in progress" ;;
+        *)     echo "unexpected crawl check response '${body}'" ;;
+    esac
+    return 1
+}
+
+peer_up() {
+    [ -z "${PEER_URL}" ] && return 0
+    local out rc
+    out=$(curl -fsS --max-time "${CURL_TIMEOUT}" -o /dev/null "${PEER_URL}" 2>&1)
+    rc=$?
+    [ ${rc} -eq 0 ] && return 0
+    echo "peer ${PEER_URL} not healthy (curl rc=${rc}: ${out})"
+    return 1
+}
+
+# A reboot that leaves Solr or the crawler stopped is worse than no reboot.
+for unit in ${REQUIRED_UNITS}; do
+    if ! systemctl is-enabled --quiet "${unit}"; then
+        log "${unit} is not enabled at boot — refusing to reboot" err
+        exit 1
+    fi
+done
+
+dry_run=0
+[ "${1:-}" = "--dry-run" ] && dry_run=1
+
+deadline=$(( $(date +%s) + MAX_WAIT_HOURS * 3600 ))
+waited=0
+
+while :; do
+    reason=$(crawls_idle) && reason=$(peer_up) && break
+
+    if [ ${dry_run} -eq 1 ]; then
+        log "dry run: NOT safe to reboot — ${reason}"
+        exit 1
+    fi
+    if [ "$(date +%s)" -ge "${deadline}" ]; then
+        log "still not safe after ${MAX_WAIT_HOURS}h (${reason}) — skipping this month's reboot" err
+        exit 1
+    fi
+    log "deferring reboot — ${reason}; next check in ${CHECK_INTERVAL_MINUTES}m"
+    waited=1
+    sleep $(( CHECK_INTERVAL_MINUTES * 60 ))
+done
+
+if [ ${dry_run} -eq 1 ]; then
+    log "dry run: safe to reboot now"
+    exit 0
+fi
+
+[ ${waited} -eq 1 ] && msg="checks passed after deferring" || msg="checks passed"
+log "${msg} — rebooting for monthly maintenance" warning
+exec systemctl reboot

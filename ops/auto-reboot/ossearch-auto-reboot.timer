@@ -1,0 +1,12 @@
+[Unit]
+Description=Monthly OSSearch maintenance reboot on the last day of the month
+
+[Timer]
+# "~01" = last day of the month (verify: systemd-analyze calendar '*-*~01 02:00:00').
+# Each host gets its own time from a drop-in in timer.d/, see README.md.
+OnCalendar=*-*~01 02:00:00
+# No Persistent=: a missed run should wait for next month, not reboot at boot time.
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
