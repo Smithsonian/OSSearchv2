@@ -1,0 +1,19 @@
+# /etc/sysconfig/ossearch-auto-reboot — per-host settings for ossearch-auto-reboot.
+# Uncomment the block for this host and fill in the <placeholders>.
+# Leave a variable empty to skip that check.
+
+# --- Solr leader (crawls index into it) ---------------------------------------
+# CRAWL_CHECK_URL must reach the crawl server (the node running the Quartz
+# scheduler) directly, never a load-balanced name.
+#CRAWL_CHECK_URL=https://<crawl-server>/api/scheduler/shutdownCheck
+#PEER_URL=http://<solr-follower>:8983/solr/<core>/admin/ping
+#REQUIRED_UNITS="solr.service"
+
+# --- Crawl server (runs the crawls) -------------------------------------------
+#CRAWL_CHECK_URL=http://127.0.0.1:8484/api/scheduler/shutdownCheck
+#PEER_URL=http://<solr-leader>:8983/solr/<core>/admin/ping
+#REQUIRED_UNITS="ossearch-crawler.service"
+
+CHECK_INTERVAL_MINUTES=10
+# Give up (no reboot this month) if still unsafe after this long.
+MAX_WAIT_HOURS=20

@@ -1,0 +1,11 @@
+[Unit]
+Description=OSSearch monthly maintenance reboot (waits for crawls to finish)
+Documentation=file:///usr/local/sbin/ossearch-auto-reboot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ossearch-auto-reboot
+# The script polls for up to MAX_WAIT_HOURS itself; don't let systemd kill it first.
+TimeoutStartSec=infinity
