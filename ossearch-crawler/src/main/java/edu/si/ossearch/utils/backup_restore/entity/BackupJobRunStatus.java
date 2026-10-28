@@ -25,10 +25,14 @@ import java.sql.Timestamp;
  * {@code 0}/{@code false} would be a lie the UI cannot distinguish from a real
  * zero-collection run; {@code null} round-trips as JSON {@code null}.
  * <p>
- * Column types are pinned explicitly rather than left to Hibernate's defaults.
- * {@code ddl-auto: update} only ever ADDS missing tables/columns - it never alters an
- * existing column - so an unpinned type would silently give fresh installs a different
- * schema from every database that already has this table.
+ * Column types are pinned explicitly rather than left to Hibernate's defaults, to match
+ * the types the hand-rolled DDL gave the databases that already have this table. The
+ * safety here rests on that MATCH, not on Hibernate declining to change anything: on
+ * MySQL {@code MySQLDialect.supportsAlterColumnType()} is true and
+ * {@code StandardTableMigrator} emits a {@code modify column} when the mapped type
+ * differs from the existing one. An unpinned type would therefore either drift a fresh
+ * install away from every existing database, or have {@code ddl-auto: update} rewrite a
+ * live column out from under it.
  *
  * @author jbirkhimer
  */
@@ -79,7 +83,12 @@ public class BackupJobRunStatus implements Serializable {
     @Column(name = "retention_files_failed_delete")
     private Integer retentionFilesFailedDelete;
 
-    @Column(name = "retention_dry_run")
+    /**
+     * Pinned to {@code tinyint(1)}: that is what the old hand-rolled DDL created, while
+     * Hibernate's default for a {@code Boolean} on MySQL is {@code bit(1)}. Without this
+     * the one column would not match, which is the whole point of pinning the rest.
+     */
+    @Column(name = "retention_dry_run", columnDefinition = "TINYINT(1)")
     private Boolean retentionDryRun;
 
     /**

@@ -14,6 +14,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.transaction.CannotCreateTransactionException;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -163,6 +164,23 @@ class ScheduledCollectionBackupServiceTest {
 
         verify(leaseService).release("test-host");
         verify(statusService).recordFailed(eq(1L), any(Exception.class));
+        verifyNoInteractions(backupRestoreService);
+    }
+
+    /**
+     * recordStart() runs after the lease has been taken, so it must sit inside the
+     * try/finally that releases it. If it did not, a database restart in that window
+     * would strand the lease for its full duration and have every operator-triggered
+     * rerun refused until it expired.
+     */
+    @Test
+    void releasesLeaseWhenTheFirstStatusWriteFails() {
+        when(statusService.recordStart(anyString(), any(Instant.class)))
+                .thenThrow(new CannotCreateTransactionException("db down"));
+
+        service.runScheduledBackup();
+
+        verify(leaseService).release("test-host");
         verifyNoInteractions(backupRestoreService);
     }
 

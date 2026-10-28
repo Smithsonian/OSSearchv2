@@ -9,7 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.transaction.CannotCreateTransactionException;
 
 import java.sql.Timestamp;
 import java.time.Duration;
@@ -178,14 +178,76 @@ class BackupJobStatusServiceTest {
     @Test
     void aFailedLookupIsIndistinguishableFromNoHistory() {
         when(repository.findFirstByOrderByStartedAtDescIdDesc())
-                .thenThrow(new DataAccessResourceFailureException("db down"));
+                .thenThrow(new CannotCreateTransactionException("db down"));
         assertThat(service.getLastRun()).isEmpty();
     }
 
+    /**
+     * The point of {@code lookupLastRun()}: the two states {@code getLastRun()}
+     * deliberately collapses must be tellable apart by the controller, so that a broken
+     * status query reaches the operator as an alert rather than as "nothing has run yet".
+     * The stubbed exception is {@link CannotCreateTransactionException} for the reason
+     * given on {@link #aFailedInsertYieldsANullRunIdRatherThanPropagating()}.
+     */
+    @Test
+    void lookupLastRunReportsAFailedQueryAsAnErrorRatherThanAsNoHistory() {
+        when(repository.findFirstByOrderByStartedAtDescIdDesc())
+                .thenThrow(new CannotCreateTransactionException("db down"));
+
+        BackupJobStatusService.LastRunLookup lookup = service.lookupLastRun();
+        assertThat(lookup.failed()).isTrue();
+        assertThat(lookup.error()).contains("db down");
+        assertThat(lookup.lastRun()).isNull();
+    }
+
+    @Test
+    void lookupLastRunReportsAnEmptyTableAsNoHistoryRatherThanAsAnError() {
+        when(repository.findFirstByOrderByStartedAtDescIdDesc()).thenReturn(Optional.empty());
+
+        BackupJobStatusService.LastRunLookup lookup = service.lookupLastRun();
+        assertThat(lookup.failed()).isFalse();
+        assertThat(lookup.error()).isNull();
+        assertThat(lookup.lastRun()).isNull();
+    }
+
+    /** A message-less exception must still report as a failure, not as an empty table. */
+    @Test
+    void lookupLastRunStillReportsAFailureWhenTheExceptionCarriesNoMessage() {
+        when(repository.findFirstByOrderByStartedAtDescIdDesc())
+                .thenThrow(new CannotCreateTransactionException(null));
+
+        BackupJobStatusService.LastRunLookup lookup = service.lookupLastRun();
+        assertThat(lookup.failed()).isTrue();
+        assertThat(lookup.error()).isEqualTo("CannotCreateTransactionException");
+    }
+
+    @Test
+    void lookupLastRunReturnsTheRowWithNoErrorWhenTheQuerySucceeds() {
+        BackupJobRunStatus run = new BackupJobRunStatus();
+        run.setId(1L);
+        run.setHostname("node-a");
+        run.setStatus("SUCCESS");
+        run.setStartedAt(Timestamp.from(Instant.now()));
+        when(repository.findFirstByOrderByStartedAtDescIdDesc()).thenReturn(Optional.of(run));
+
+        BackupJobStatusService.LastRunLookup lookup = service.lookupLastRun();
+        assertThat(lookup.failed()).isFalse();
+        assertThat(lookup.lastRun()).containsEntry("hostname", "node-a")
+                .containsEntry("status", "SUCCESS");
+    }
+
+    /**
+     * The stubbed exception is {@link CannotCreateTransactionException} and NOT a
+     * {@code DataAccessException}, because that is what an unreachable database actually
+     * produces on this path: {@code save()} is {@code @Transactional}, so the failure
+     * happens in {@code JpaTransactionManager.doBegin}. The two are siblings under
+     * {@code NestedRuntimeException}, so a {@code catch (DataAccessException)} in the
+     * service would let this propagate instead of returning null.
+     */
     @Test
     void aFailedInsertYieldsANullRunIdRatherThanPropagating() {
         when(repository.save(any(BackupJobRunStatus.class)))
-                .thenThrow(new DataAccessResourceFailureException("db down"));
+                .thenThrow(new CannotCreateTransactionException("db down"));
         assertThat(service.recordStart("node-a", Instant.now())).isNull();
     }
 }

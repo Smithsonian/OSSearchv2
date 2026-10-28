@@ -124,7 +124,6 @@ public class ScheduledCollectionBackupService {
         }
 
         log.info("Scheduled collection backup: starting run on {}", hostname);
-        Long runId = statusService.recordStart(hostname, Instant.now());
 
         // Set to false by the abort paths. An abort decides nothing about the backup
         // window itself - it records that this window has been CLAIMED and could not be
@@ -134,7 +133,15 @@ public class ScheduledCollectionBackupService {
         // B walks straight into the lease this node just dropped and runs the whole job a
         // second time, which is exactly what the mutex exists to prevent.
         boolean releaseLease = true;
+        Long runId = null;
         try {
+            // recordStart() is INSIDE this try/finally on purpose. The lease is already
+            // held by the time we get here, so anything thrown before the finally - a
+            // database restart between acquiring the lease and the first status write
+            // being the realistic one - would leave the lease held for its full duration
+            // and have any operator-triggered rerun refused for that whole window.
+            runId = statusService.recordStart(hostname, Instant.now());
+
             // crawlDir.getUsableSpace() returns 0 for a path that does not exist or is not
             // mounted (rather than throwing), which would otherwise misreport "the NFS mount
             // is gone" as ordinary low disk space. Check this FIRST, with its own distinct

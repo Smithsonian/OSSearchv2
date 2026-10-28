@@ -7,6 +7,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.TransactionException;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
@@ -25,6 +26,17 @@ import java.time.Duration;
  * {@code ddl-auto: update} like every other table in the application; the atomicity
  * argument lives in {@link BackupJobLeaseRepository}, which is where the actual
  * statements are.
+ * <p>
+ * Every method here catches {@link DataAccessException} AND
+ * {@link TransactionException}. The two are siblings under
+ * {@code NestedRuntimeException}, not ancestor and descendant, and the repository
+ * methods are {@code @Transactional}: when the database is unreachable the failure
+ * happens while BEGINNING the transaction, so {@code JpaTransactionManager.doBegin}
+ * reports it as {@code CannotCreateTransactionException} - a {@code TransactionException}
+ * that a {@code DataAccessException} catch does not see. Catching only the latter would
+ * leave every fail-safe below dead for the exact outage it exists to survive.
+ * Programming errors (NPE, IllegalArgumentException, ...) are deliberately NOT caught:
+ * they are bugs that must surface, not infrastructure failures to be ridden out.
  *
  * @author jbirkhimer
  */
@@ -49,9 +61,10 @@ public class BackupJobLeaseService {
      * every node with the feature off. Conditioning the startup WORK gets the same
      * saving without that.
      * <p>
-     * Never throws. Status/lease bookkeeping must not be able to break application
-     * startup; a failure here is logged at ERROR and {@link #tryAcquire} will then fail
-     * closed (0 rows updated, no lease, no run) rather than run unprotected.
+     * No database failure can propagate from here. Status/lease bookkeeping must not be
+     * able to break application startup; a failure is logged at ERROR and
+     * {@link #tryAcquire} will then fail closed (no lease, no run) rather than run
+     * unprotected.
      */
     @PostConstruct
     void seedLeaseRow() {
@@ -60,7 +73,7 @@ public class BackupJobLeaseService {
         }
         try {
             leaseRepository.seed(LOCK_NAME);
-        } catch (DataAccessException e) {
+        } catch (DataAccessException | TransactionException e) {
             log.error("failed to seed backup job lease row {}: {}", LOCK_NAME, e.getMessage(), e);
         }
     }
@@ -73,7 +86,7 @@ public class BackupJobLeaseService {
     public boolean tryAcquire(String owner, Duration leaseDuration) {
         try {
             return leaseRepository.acquire(owner, leaseDuration.getSeconds(), LOCK_NAME) == 1;
-        } catch (DataAccessException e) {
+        } catch (DataAccessException | TransactionException e) {
             // Fail safe: if we can't prove we hold the lease, never run.
             log.error("backup job lease acquisition failed for owner {}: {}", owner, e.getMessage(), e);
             return false;
@@ -94,7 +107,7 @@ public class BackupJobLeaseService {
     public boolean extend(String owner, Duration leaseDuration) {
         try {
             return leaseRepository.extend(owner, leaseDuration.getSeconds(), LOCK_NAME) == 1;
-        } catch (DataAccessException e) {
+        } catch (DataAccessException | TransactionException e) {
             // Same fail-safe rule as tryAcquire: unproven means not held.
             log.error("backup job lease extension failed for owner {}: {}", owner, e.getMessage(), e);
             return false;
@@ -106,11 +119,14 @@ public class BackupJobLeaseService {
      * The owner scoping means a node can never release someone else's lease
      * (e.g. a slow/late release from a previous attempt that has since expired
      * and been re-acquired by another node).
+     * <p>
+     * Swallows database failures because the caller invokes it from a {@code finally}
+     * block: an exception escaping here would replace whatever actually failed the run.
      */
     public void release(String owner) {
         try {
             leaseRepository.release(owner, LOCK_NAME);
-        } catch (DataAccessException e) {
+        } catch (DataAccessException | TransactionException e) {
             log.error("backup job lease release failed for owner {}: {}", owner, e.getMessage(), e);
         }
     }

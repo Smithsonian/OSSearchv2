@@ -68,10 +68,32 @@ class ScheduledBackupConfigValidationTest {
                 .run(context -> assertThat(context).hasFailed());
     }
 
+    /**
+     * A keep-newest floor above the {@code @Max} bound holds every backup of every
+     * collection forever, so the volume is never pruned while retention still reports
+     * COMPLETED - the count-side mirror of the oversized retention window above.
+     */
+    @Test
+    void refusesToStartWithAnAbsurdlyLargeRetentionCount() {
+        runner.withPropertyValues("ossearch.backup.scheduled.retention.count=10001")
+                .run(context -> assertThat(context).hasFailed());
+    }
+
     /** A lease that is already expired when granted is not a mutex at all. */
     @Test
     void refusesToStartWithANonPositiveLeaseDuration() {
         runner.withPropertyValues("ossearch.backup.scheduled.lease.duration-hours=0")
+                .run(context -> assertThat(context).hasFailed());
+    }
+
+    /**
+     * Past the one-week {@code @Max} bound a typo wedges the mutex for a node that has
+     * since died, and the same value is the RUNNING-row staleness threshold, so the UI
+     * would keep reporting that dead run as live for the whole period.
+     */
+    @Test
+    void refusesToStartWithAnAbsurdlyLongLeaseDuration() {
+        runner.withPropertyValues("ossearch.backup.scheduled.lease.duration-hours=169")
                 .run(context -> assertThat(context).hasFailed());
     }
 

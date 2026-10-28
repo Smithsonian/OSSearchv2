@@ -8,6 +8,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.TransactionException;
 
 import java.sql.Timestamp;
 import java.time.Duration;
@@ -20,9 +21,17 @@ import java.util.Optional;
  * Writes and reads the append-only audit log of scheduled collection backup job runs
  * ({@link BackupJobRunStatus}).
  * <p>
- * Every write method is a no-op on a null {@code runId} and swallows
- * {@link DataAccessException} into a log line: status bookkeeping must never be able to
- * break the backup run itself, and it must never be able to break application startup.
+ * Every write method is a no-op on a null {@code runId} and swallows both
+ * {@link DataAccessException} and {@link TransactionException} into a log line: status
+ * bookkeeping must never be able to break the backup run itself.
+ * <p>
+ * Both are needed, and neither implies the other - they are siblings under
+ * {@code NestedRuntimeException}. The repository methods are {@code @Transactional}, so
+ * an unreachable database fails while BEGINNING the transaction and surfaces as
+ * {@code CannotCreateTransactionException}, a {@code TransactionException} that a
+ * {@code DataAccessException} catch does not see. Programming errors (NPE,
+ * IllegalArgumentException, ...) are deliberately NOT caught: a bug in this class should
+ * surface rather than be logged away on every run forever.
  *
  * @author jbirkhimer
  */
@@ -72,7 +81,7 @@ public class BackupJobStatusService {
             run.setStartedAt(Timestamp.from(startedAt));
             run.setStatus(STATUS_RUNNING);
             return runStatusRepository.save(run).getId();
-        } catch (DataAccessException e) {
+        } catch (DataAccessException | TransactionException e) {
             log.error("failed to record backup job run start for host {}: {}", hostname, e.getMessage(), e);
             return null;
         }
@@ -139,22 +148,63 @@ public class BackupJobStatusService {
     }
 
     /**
+     * Outcome of a single {@link #lookupLastRun()} call: either a row (or {@code null} for
+     * an empty table) with no error, or a {@code null} row with the failure detail.
+     * <p>
+     * The outcome is RETURNED BY THE CALL rather than recorded on the service, which is a
+     * correctness requirement and not a style choice: this service is a singleton serving
+     * concurrent HTTP requests, so a "did the last lookup fail" flag on the instance could
+     * be read by one request after an unrelated request set it, reporting a database
+     * outage to an operator whose own query succeeded (and vice versa). A value handed
+     * back to the caller cannot be crossed between requests.
+     *
+     * @param lastRun the most recent run as the UI-contract map, or {@code null} when the
+     *                table has no rows OR the lookup failed - check {@link #failed()} to
+     *                tell those apart
+     * @param error   the failure detail when the lookup failed, else {@code null}
+     */
+    public record LastRunLookup(Map<String, Object> lastRun, String error) {
+        /** True only when the query itself failed; an empty table is not a failure. */
+        public boolean failed() {
+            return error != null;
+        }
+    }
+
+    /**
      * Most recent run, mapped into a {@link LinkedHashMap} with camelCase keys for direct
      * JSON serialization. The key names and their order are a PUBLIC API CONTRACT: the
      * controller serializes this map straight to JSON and the Vue status component reads
      * the fields by name. Renaming or reordering a key is a breaking UI change.
      * <p>
+     * Unlike {@link #getLastRun()} this distinguishes "no history" from "the lookup
+     * broke", which need opposite responses from an operator. It is the single query both
+     * methods run - asking which state you are in costs no extra database round trip.
+     */
+    public LastRunLookup lookupLastRun() {
+        try {
+            return new LastRunLookup(
+                    runStatusRepository.findFirstByOrderByStartedAtDescIdDesc()
+                            .map(this::toMap).orElse(null),
+                    null);
+        } catch (DataAccessException | TransactionException e) {
+            log.error("failed to fetch last backup job run status: {}", e.getMessage(), e);
+            // Some driver/transaction exceptions carry a null message; the class name is
+            // then the only detail available, and an error of null would read as success.
+            return new LastRunLookup(null,
+                    e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * Most recent run, or {@link Optional#empty()}.
+     * <p>
      * Returns {@link Optional#empty()} both when the table has no rows and when the query
      * itself fails, so callers never need to distinguish "no history" from "status lookup
-     * broke".
+     * broke". Callers that DO need to tell them apart call {@link #lookupLastRun()}
+     * instead.
      */
     public Optional<Map<String, Object>> getLastRun() {
-        try {
-            return runStatusRepository.findFirstByOrderByStartedAtDescIdDesc().map(this::toMap);
-        } catch (DataAccessException e) {
-            log.error("failed to fetch last backup job run status: {}", e.getMessage(), e);
-            return Optional.empty();
-        }
+        return Optional.ofNullable(lookupLastRun().lastRun());
     }
 
     private Map<String, Object> toMap(BackupJobRunStatus run) {
@@ -229,7 +279,7 @@ public class BackupJobStatusService {
             run.setFinishedAt(Timestamp.from(Instant.now()));
             mutation.accept(run);
             runStatusRepository.save(run);
-        } catch (DataAccessException e) {
+        } catch (DataAccessException | TransactionException e) {
             log.error("failed to record backup job run {} {}: {}", runId, what, e.getMessage(), e);
         }
     }

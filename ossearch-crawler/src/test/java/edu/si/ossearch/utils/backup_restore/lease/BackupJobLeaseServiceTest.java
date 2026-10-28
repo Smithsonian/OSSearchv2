@@ -7,7 +7,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.transaction.CannotCreateTransactionException;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -117,15 +117,35 @@ class BackupJobLeaseServiceTest {
         assertThat(service.extend("node-a", LEASE)).isFalse();
     }
 
+    /**
+     * {@link CannotCreateTransactionException} and NOT some
+     * {@code DataAccessException} subclass, because that is what the production path
+     * actually throws: the repository methods are {@code @Transactional}, so an
+     * unreachable database fails in {@code JpaTransactionManager.doBegin} before any
+     * statement runs. The two types are siblings under {@code NestedRuntimeException},
+     * so a {@code catch (DataAccessException)} here would not catch this at all and
+     * these assertions would never be reached.
+     */
     @Test
     void everyOperationFailsSafeWhenTheDatabaseIsUnreachable() {
         when(repository.acquire(anyString(), anyLong(), anyString()))
-                .thenThrow(new DataAccessResourceFailureException("db down"));
+                .thenThrow(new CannotCreateTransactionException("db down"));
         when(repository.extend(anyString(), anyLong(), anyString()))
-                .thenThrow(new DataAccessResourceFailureException("db down"));
+                .thenThrow(new CannotCreateTransactionException("db down"));
 
         assertThat(service.tryAcquire("node-a", LEASE)).isFalse();
         assertThat(service.extend("node-a", LEASE)).isFalse();
+    }
+
+    /**
+     * release() runs inside the backup job's {@code finally}, so an exception escaping it
+     * would replace whatever actually failed the run with a database error.
+     */
+    @Test
+    void releaseSwallowsADatabaseFailureSoItCannotMaskTheRealError() {
+        when(repository.release(anyString(), anyString()))
+                .thenThrow(new CannotCreateTransactionException("db down"));
+        service.release("node-a");
     }
 
     @Test
@@ -143,7 +163,7 @@ class BackupJobLeaseServiceTest {
 
     @Test
     void aFailedSeedIsSwallowedSoItCanNeverAbortStartup() {
-        when(repository.seed(anyString())).thenThrow(new DataAccessResourceFailureException("db down"));
+        when(repository.seed(anyString())).thenThrow(new CannotCreateTransactionException("db down"));
         ScheduledBackupConfig enabled = new ScheduledBackupConfig();
         enabled.setEnabled(true);
         new BackupJobLeaseService(repository, enabled).seedLeaseRow();
