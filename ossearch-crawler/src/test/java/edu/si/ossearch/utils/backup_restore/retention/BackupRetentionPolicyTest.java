@@ -15,6 +15,7 @@ import java.time.ZoneId;
 import java.util.Date;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Plain JUnit + AssertJ tests for {@link BackupRetentionPolicy}. Deliberately no Spring:
@@ -411,6 +412,24 @@ class BackupRetentionPolicyTest {
     void skippedResultTruncatesAnOverlongReasonToTheColumnWidth() {
         assertThat(RetentionResult.skipped("x".repeat(5000)).getErrorMessage()).hasSize(2000);
         assertThat(RetentionResult.skipped(null).getErrorMessage()).isNull();
+    }
+
+    /**
+     * A failed delete is the one retention outcome an operator has to chase to a specific
+     * file, so the path is recorded the way candidates and deleted files already are, behind
+     * the same unmodifiable view.
+     */
+    @Test
+    void failedDeletesRecordTheirPathsLikeDeletedAndCandidateFilesDo() {
+        RetentionResult result = new RetentionResult(false);
+        File stuck = new File("/data/crawls/coll_1/backup/coll_1_backup_2020-01-01T00-00-00.json");
+
+        result.recordFailedDelete(stuck);
+
+        assertThat(result.getFailedDeleteCount()).isEqualTo(1);
+        assertThat(result.getFailedDeleteFiles()).containsExactly(stuck.getAbsolutePath());
+        assertThatThrownBy(() -> result.getFailedDeleteFiles().add("x"))
+                .isInstanceOf(UnsupportedOperationException.class);
     }
 
     @Test

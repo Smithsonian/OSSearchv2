@@ -55,31 +55,26 @@ import java.util.regex.Pattern;
 public class BackupRetentionPolicy {
 
     /**
-     * The backup filename pattern for one collection directory, anchored to that
-     * directory's own name: under {@code <collectionDirName>/backup/} only
-     * {@code <collectionDirName>_backup_<yyyy-MM-dd'T'HH-mm-ss>.json} is a candidate. An
-     * unanchored leading {@code .+} would make every file ending {@code _backup_<ts>.json}
-     * deletable no matter which collection it names.
+     * This collection directory's backup filename pattern, from the single definition shared
+     * with the writer and with the admin-facing backup lister
+     * ({@link BackupRestoreService#backupFilePattern}). Keeping one definition is what stops
+     * retention and the lister from disagreeing about what a backup file is.
      * <p>
      * Package-private so the test in this package can assert it against the filename the
      * writer actually produces ({@link BackupRestoreService#backupFileName}).
-     * <p>
-     * {@code Pattern.quote} on the directory name: this pattern gates a deletion path and
-     * the name is data, derived from {@code Collection.name}. Unquoted, a name containing
-     * regex metacharacters would either WIDEN what gets deleted (a '.' becoming a wildcard)
-     * or make {@code Pattern.compile} throw. Quoting makes the name always a literal.
-     * <p>
-     * DOTALL is inert here and kept only as zero-risk defence: with the whole prefix inside
-     * {@code \Q...\E} and the timestamp group written as explicit digit classes, the
-     * pattern contains no '.' metacharacter for the flag to affect. A collection name
-     * containing a line terminator - writable by rows created before this change added
-     * {@code @Pattern}/{@code @Size} validation to {@code Collection#name} - matches
-     * literally either way.
      */
     static Pattern backupFilePattern(String collectionDirName) {
-        return Pattern.compile("^" + Pattern.quote(collectionDirName)
-                + "_backup_(\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2})\\.json$", Pattern.DOTALL);
+        return BackupRestoreService.backupFilePattern(collectionDirName);
     }
+
+    /**
+     * Unanchored backup name shape, used ONLY to log the difference between "this backup
+     * directory is empty" and "this backup directory is full of files named for some other
+     * collection". It never gates a deletion - that is {@link #backupFilePattern}'s job, and
+     * it stays anchored to the enclosing directory's name.
+     */
+    private static final Pattern ANY_COLLECTION_BACKUP_SHAPE =
+            Pattern.compile("^.+_backup_\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}\\.json$", Pattern.DOTALL);
 
     private static final DateTimeFormatter TS_FORMAT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH-mm-ss");
@@ -182,10 +177,17 @@ public class BackupRetentionPolicy {
         Pattern backupFile = backupFilePattern(collectionDir.getName());
 
         List<File> backups = new ArrayList<>();
+        // Counted only for the DEBUG line below: files that look like a backup but name a
+        // different collection, so this directory is not simply empty.
+        int foreignShaped = 0;
         for (File f : entries) {
             // Only plain files matching this collection's exact backup filename pattern are
             // ever candidates - stray files, subdirectories, ".bak" files, files named for
             // another collection, anything else is left alone.
+            if (f.isFile() && !backupFile.matcher(f.getName()).matches()
+                    && ANY_COLLECTION_BACKUP_SHAPE.matcher(f.getName()).matches()) {
+                foreignShaped++;
+            }
             if (f.isFile() && backupFile.matcher(f.getName()).matches()) {
                 // A name-shape match whose timestamp is not a real calendar date/time (e.g.
                 // 2026-13-45T99-99-99) is dropped entirely: not a deletion candidate, and
@@ -201,9 +203,10 @@ public class BackupRetentionPolicy {
                 // ranks purely on the filename (see timestampOf()), so a backup truncated to
                 // nothing by a crash or ENOSPC mid-write would still sort as the newest,
                 // occupy a floor slot, and push the last genuinely-good backup into the
-                // deletable set. saveLocalBackup now writes via a temp file + atomic move so
-                // this should not arise; this is the second half of that fix, covering files
-                // already on disk from before it and any write path that bypasses it.
+                // deletable set. saveLocalBackup now stages the write under a ".part" name
+                // and renames it into place, so this should not arise; this is the second
+                // half of that fix, covering files already on disk from before it and any
+                // write path that bypasses it.
                 if (f.length() == 0L) {
                     log.warn("Backup retention: ignoring zero-length backup file {} " +
                             "(truncated or failed write; it must not occupy a keep-newest slot)",
@@ -215,11 +218,25 @@ public class BackupRetentionPolicy {
         }
 
         if (backups.isEmpty()) {
+            // Without this, a backup directory holding nothing but files named for a
+            // different collection is byte-for-byte indistinguishable in the log from an
+            // empty one, even though the two want very different responses from an operator.
+            if (foreignShaped > 0) {
+                log.debug("Backup retention: backup dir {} holds {} backup-shaped file(s), none of them " +
+                        "named for collection dir '{}'; nothing is a candidate here",
+                        backupDir, foreignShaped, collectionDir.getName());
+            }
             return;
         }
 
-        // Newest first, by timestamp parsed from the filename (see timestampOf()).
-        backups.sort(Comparator.comparing((File f) -> timestampOf(f, backupFile)).reversed());
+        // Newest first, by timestamp parsed from the filename (see timestampOf()), then by
+        // name. The filename tie-break is what makes the floor boundary deterministic: two
+        // different filenames can resolve to the same instant (a local time inside a
+        // daylight-saving gap is shifted onto the same instant as the time it is shifted
+        // to), and on a timestamp-only sort which of them survives at the boundary is
+        // whatever order listFiles() happened to return.
+        backups.sort(Comparator.comparing((File f) -> timestampOf(f, backupFile)).reversed()
+                .thenComparing(File::getName));
 
         // The newest `keepNewestCount` backups are always kept, unconditionally, regardless
         // of age; only files behind that floor are even looked at by the age rule below.

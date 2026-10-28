@@ -120,8 +120,19 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
                 return new ArrayList<>();
             }
 
+            // Only this collection's own backup files, by the one shared naming definition
+            // (BackupRestoreService#backupFilePattern) that retention also uses. Anything
+            // else in this directory - a staging ".part" file left by a hard-killed write, a
+            // file named for another collection, a hand-copied note - is not offered as a
+            // restorable backup. Non-empty, too: a zero-length file is a failed write, and
+            // restoring from it can only fail.
+            java.util.regex.Pattern backupFile =
+                    BackupRestoreService.backupFilePattern(crawlBaseDir.getName());
+
             return Stream.of(files)
-                    .filter(file -> !file.isDirectory())
+                    .filter(File::isFile)
+                    .filter(file -> backupFile.matcher(file.getName()).matches())
+                    .filter(file -> file.length() > 0L)
                     .map(file -> {
                         Map<String, String> row = new HashMap<>();
                         row.put("file", file.getName());
@@ -232,26 +243,6 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
     }
 
     /**
-     * Name of the staging subdirectory used by {@link #writeAtomically}. It sits inside the
-     * backup directory so that the staged file is on the SAME filesystem as its final
-     * destination, which is what makes {@link java.nio.file.StandardCopyOption#ATOMIC_MOVE}
-     * work on the shared NFS volume.
-     * <p>
-     * A subdirectory rather than a differently-named file in the backup directory itself,
-     * because a leftover partial must be invisible to BOTH readers of that directory, and
-     * those two have different rules:
-     * <ul>
-     *   <li>{@code BackupRetentionPolicy} filters by filename, so any name that does not
-     *       match its pattern would already be enough for it.</li>
-     *   <li>{@link #collectionListBackupsAvailable} does NOT filter by name - it lists every
-     *       non-directory entry - so a leftover temp file sitting next to the backups would
-     *       be offered to the user as a restorable backup. Only being a directory, or not
-     *       being in that directory at all, hides it there.</li>
-     * </ul>
-     */
-    private static final String STAGING_DIR_NAME = ".tmp";
-
-    /**
      * Writes {@code content} to {@code dir/filename} atomically: fully into a staging file
      * first, then a single rename into place.
      * <p>
@@ -264,53 +255,88 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
      * genuinely-good backup into the deletable set. The rename makes the final name appear
      * only once the bytes are all there.
      * <p>
-     * The staging directory is removed again on the way out when it is empty, so the normal
-     * steady state of a backup directory is exactly its backup files and nothing else.
+     * The staging file is a SIBLING of its destination, {@code <filename>.part}, in the
+     * backup directory itself. Being in the same directory is what makes it certainly on the
+     * same filesystem, and that is what makes {@code ATOMIC_MOVE} work - so the move is
+     * unconditional and there is no non-atomic fallback to degrade into a copy (which would
+     * put a partial file under the final name, the exact failure this method exists to
+     * prevent). It is safe to leave in plain sight because both readers of a backup
+     * directory now filter by {@link BackupRestoreService#backupFilePattern}, which a
+     * {@code .part} name does not match: retention will not prune it and
+     * {@link #collectionListBackupsAvailable} will not offer it for restore. A {@code .part}
+     * left behind by a hard kill is therefore inert and visible, rather than hidden in a
+     * dot-directory where nothing could ever see or clean it up.
+     * <p>
+     * No stale-{@code .part} cleanup is attempted here. The only {@code .part} this call
+     * could collide with is one for the very same target filename, i.e. written in the same
+     * second for the same collection - far more likely to be a concurrent writer than
+     * abandoned garbage - so deleting it blind would destroy a live write. The collision is
+     * handled by {@code CREATE_NEW} below instead: the second writer fails loudly rather
+     * than interleaving its bytes with the first writer's.
+     * <p>
+     * {@code <filename>.part} adds 5 bytes to a name that is already {@code <collection
+     * dir>_backup_<19 chars>.json}; with {@code Collection#name} capped at 200 characters
+     * the staged name stays inside the usual 255-byte component limit for ASCII names.
      */
     private void writeAtomically(java.nio.file.Path dir, String filename, byte[] content) throws IOException {
         java.nio.file.Path target = dir.resolve(filename);
-        java.nio.file.Path stagingDir = dir.resolve(STAGING_DIR_NAME);
-        Files.createDirectories(stagingDir);
+        java.nio.file.Path staged = dir.resolve(filename + BackupRestoreService.STAGED_FILE_SUFFIX);
 
-        // A fixed short prefix rather than the real filename: collection names can be long,
-        // and prefix + random suffix + ".part" must stay inside the filesystem's 255-byte
-        // name limit. The staged file is short-lived and its identity does not matter.
-        java.nio.file.Path staged = Files.createTempFile(stagingDir, "staged.", ".part");
+        // CREATE_NEW, not the default CREATE+TRUNCATE_EXISTING: the staged name is derived
+        // from the target name, so two writers racing on the same target would otherwise
+        // write into one file and the winner would rename a mixture of both into place.
+        Files.write(staged, content, java.nio.file.StandardOpenOption.CREATE_NEW,
+                java.nio.file.StandardOpenOption.WRITE);
         boolean moved = false;
         try {
-            Files.write(staged, content);
-            try {
-                Files.move(staged, target, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
-            } catch (java.nio.file.AtomicMoveNotSupportedException e) {
-                // Possible when the staging directory and the target somehow end up on
-                // different filesystems (a bind/submount under the backup directory), or on
-                // a provider that simply does not implement it. A non-atomic move is still
-                // strictly better than writing in place: the bytes are already complete and
-                // fsync-visible before the rename, so the window in which a partial file can
-                // exist under the final name shrinks from "the whole write" to "the copy".
-                log.warn("Atomic move not supported for {}, falling back to a non-atomic move: {}",
-                        target, e.toString());
-                Files.move(staged, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            }
+            setBackupFileMode(staged);
+            // Same directory, so same filesystem: ATOMIC_MOVE cannot be refused as
+            // cross-device here, and an AtomicMoveNotSupportedException from a provider that
+            // does not implement it at all is a genuine failure of this write, not something
+            // to paper over with a copy.
+            Files.move(staged, target, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
             moved = true;
         } finally {
             if (!moved) {
                 // The move never happened, so the staged bytes are garbage. Deleting them
-                // here is what keeps a failed write from leaving anything behind at all;
-                // the staging directory is only a backstop for a hard kill that skips this.
+                // here is what keeps a failed write from leaving anything behind at all.
                 try {
                     Files.deleteIfExists(staged);
                 } catch (IOException cleanupFailure) {
                     log.warn("Failed to clean up staged backup file {}: {}", staged, cleanupFailure.toString());
                 }
             }
-            try {
-                // Succeeds only when empty, which is the point: a concurrent write staging
-                // its own file in here must not have its directory pulled out from under it.
-                Files.deleteIfExists(stagingDir);
-            } catch (IOException | RuntimeException ignored) {
-                // DirectoryNotEmptyException is the expected, harmless case.
-            }
+        }
+    }
+
+    /**
+     * Permissions of a written backup: {@code rw-r--r--}.
+     * <p>
+     * Set explicitly rather than left to the umask because the staged file is created by
+     * this code and then renamed, and the rename carries whatever mode the staged file had.
+     * Pinned at 0644 so a backup stays readable by an operator or a copy job running as
+     * another account, which is what a plain {@code Files.write} under the usual umask
+     * produced before the write was staged.
+     */
+    private static final java.util.Set<java.nio.file.attribute.PosixFilePermission> BACKUP_FILE_MODE =
+            java.nio.file.attribute.PosixFilePermissions.fromString("rw-r--r--");
+
+    /**
+     * Applies {@link #BACKUP_FILE_MODE} where the filesystem has POSIX permissions at all.
+     * Guarded rather than assumed: the view is absent on a non-POSIX filesystem (Windows, and
+     * some network mounts), where there is simply nothing to set and the write must still
+     * succeed.
+     */
+    private void setBackupFileMode(java.nio.file.Path staged) {
+        java.nio.file.attribute.PosixFileAttributeView posix = Files.getFileAttributeView(
+                staged, java.nio.file.attribute.PosixFileAttributeView.class);
+        if (posix == null) {
+            return;
+        }
+        try {
+            posix.setPermissions(BACKUP_FILE_MODE);
+        } catch (IOException | UnsupportedOperationException e) {
+            log.warn("Could not set permissions on backup file {}: {}", staged, e.toString());
         }
     }
 

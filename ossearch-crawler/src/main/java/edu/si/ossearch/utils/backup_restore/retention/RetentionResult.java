@@ -10,7 +10,8 @@ import java.util.List;
 /**
  * Mutable accumulator for the outcome of a {@link BackupRetentionPolicy#apply()} run.
  * <p>
- * {@code deletedFiles} is bounded to avoid unbounded memory growth on a first run over
+ * Each captured path list ({@code candidateFiles}, {@code deletedFiles},
+ * {@code failedDeleteFiles}) is bounded to avoid unbounded memory growth on a first run over
  * years of accumulated backups (potentially many thousands of files) - the counters
  * ({@link #getCandidateCount()}, {@link #getDeletedCount()}, {@link #getFailedDeleteCount()})
  * keep counting past the cap even after the list itself stops growing.
@@ -19,8 +20,9 @@ import java.util.List;
 public class RetentionResult {
 
     /**
-     * Maximum number of file paths retained in {@link #deletedFiles}. Counts are not capped,
-     * only the list of paths kept around for logging/inspection.
+     * Maximum number of file paths retained in each of {@link #candidateFiles},
+     * {@link #deletedFiles} and {@link #failedDeleteFiles}. Counts are not capped, only the
+     * lists of paths kept around for logging/inspection.
      */
     private static final int MAX_RETAINED_FILES = 200;
 
@@ -66,6 +68,7 @@ public class RetentionResult {
     private int failedDeleteCount;
     private final List<String> deletedFiles = new ArrayList<>();
     private final List<String> candidateFiles = new ArrayList<>();
+    private final List<String> failedDeleteFiles = new ArrayList<>();
 
     /**
      * How this retention step ended. Defaults to {@link Outcome#COMPLETED}: an instance
@@ -118,9 +121,21 @@ public class RetentionResult {
     /**
      * A candidate file whose deletion was attempted but failed (delete() returned false or
      * threw). Never aborts the run.
+     * <p>
+     * The path is kept, like a candidate's and a deleted file's, because a failed delete is
+     * the one outcome an operator has to chase to a specific file - a count alone says a
+     * backup volume is not draining without saying where. Bounded by the same
+     * {@link #MAX_RETAINED_FILES} cap; the count keeps incrementing past it.
      */
     public void recordFailedDelete(File file) {
         failedDeleteCount++;
+        if (failedDeleteFiles.size() < MAX_RETAINED_FILES) {
+            failedDeleteFiles.add(file.getAbsolutePath());
+        }
+    }
+
+    public List<String> getFailedDeleteFiles() {
+        return Collections.unmodifiableList(failedDeleteFiles);
     }
 
     public List<String> getDeletedFiles() {
