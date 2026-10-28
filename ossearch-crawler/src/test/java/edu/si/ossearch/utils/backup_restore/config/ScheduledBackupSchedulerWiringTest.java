@@ -3,10 +3,13 @@ package edu.si.ossearch.utils.backup_restore.config;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.context.PropertyPlaceholderAutoConfiguration;
+import org.springframework.boot.autoconfigure.task.TaskExecutionAutoConfiguration;
 import org.springframework.boot.autoconfigure.task.TaskSchedulingAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.TaskScheduler;
+import org.springframework.scheduling.annotation.Async;
+import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
@@ -46,9 +49,12 @@ class ScheduledBackupSchedulerWiringTest {
 
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(
-                    PropertyPlaceholderAutoConfiguration.class, TaskSchedulingAutoConfiguration.class))
-            .withUserConfiguration(SchedulingEnabled.class, ScheduledBackupExecutorConfig.class)
-            .withBean(ThreadNameProbe.class);
+                    PropertyPlaceholderAutoConfiguration.class, TaskSchedulingAutoConfiguration.class,
+                    TaskExecutionAutoConfiguration.class))
+            .withUserConfiguration(SchedulingEnabled.class, AsyncEnabled.class,
+                    ScheduledBackupExecutorConfig.class)
+            .withBean(ThreadNameProbe.class)
+            .withBean(AsyncProbe.class);
 
     @Test
     void plainScheduledMethodsDoNotRunOnTheBackupScheduler() {
@@ -99,9 +105,74 @@ class ScheduledBackupSchedulerWiringTest {
         });
     }
 
+    /**
+     * A {@code ThreadPoolTaskScheduler} is also a {@link java.util.concurrent.Executor}, and
+     * Boot guards {@code applicationTaskExecutor} with
+     * {@code @ConditionalOnMissingBean(Executor.class)}. If the two scheduler beans were
+     * declared with a {@code ThreadPoolTaskScheduler} return type, that condition would see
+     * them (it resolves the type from the factory method signature, before instantiation) and
+     * back off - leaving the context with no {@code applicationTaskExecutor} and therefore no
+     * {@code taskExecutor} alias, at which point {@code AsyncExecutionAspectSupport} falls
+     * back to {@code SimpleAsyncTaskExecutor}: a fresh, unbounded OS thread for every
+     * {@code @Async} call. This application does use {@code @EnableAsync}, on
+     * {@code CrawlUtilsController} and {@code EDANFieldMappingUtilController}, for the
+     * long-running crawl utilities.
+     * <p>
+     * Like the first test, this asserts on a real invocation's thread rather than on wiring:
+     * it calls an actual {@code @Async} method and checks where it landed.
+     */
+    @Test
+    void declaringTheSchedulersDoesNotSuppressBootsApplicationTaskExecutor() {
+        runner.run(context -> {
+            assertThat(context).hasBean("applicationTaskExecutor");
+
+            AsyncProbe probe = context.getBean(AsyncProbe.class);
+            probe.record();
+
+            assertThat(probe.latch().await(AWAIT_SECONDS, TimeUnit.SECONDS))
+                    .as("@Async method should have been invoked").isTrue();
+            assertThat(probe.threadName())
+                    .as("@Async must not fall back to the unbounded SimpleAsyncTaskExecutor")
+                    .doesNotStartWith("SimpleAsyncTaskExecutor")
+                    .doesNotStartWith("backup-job-")
+                    .doesNotStartWith("scheduling-");
+        });
+    }
+
     @Configuration(proxyBeanMethods = false)
     @EnableScheduling
     static class SchedulingEnabled {
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableAsync
+    static class AsyncEnabled {
+    }
+
+    /**
+     * Stands in for the {@code @Async} crawl utilities. The accessors are deliberate: the bean
+     * is AOP-proxied for {@code @Async}, and a CGLIB proxy does not carry the target's field
+     * values, so the latch has to be read through a method call that delegates to the target.
+     */
+    static class AsyncProbe {
+
+        private final CountDownLatch latch = new CountDownLatch(1);
+
+        private volatile String threadName;
+
+        @Async
+        void record() {
+            threadName = Thread.currentThread().getName();
+            latch.countDown();
+        }
+
+        CountDownLatch latch() {
+            return latch;
+        }
+
+        String threadName() {
+            return threadName;
+        }
     }
 
     /**

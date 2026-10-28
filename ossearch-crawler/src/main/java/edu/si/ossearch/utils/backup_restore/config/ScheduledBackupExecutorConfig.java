@@ -28,6 +28,31 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
  * fallback for the default, while {@code scheduler = "backupTaskScheduler"} still resolves
  * through {@code BeanFactoryAnnotationUtils#qualifiedBeanOfType} (a bean-name match).
  * {@code ScheduledBackupSchedulerWiringTest} pins this behaviour.
+ * <p>
+ * <b>The declared return type of both methods is {@link TaskScheduler}, not the
+ * {@code ThreadPoolTaskScheduler} that is actually constructed, and that narrowing is
+ * load-bearing.</b> {@code ThreadPoolTaskScheduler} is also a
+ * {@link java.util.concurrent.Executor}, and Boot's
+ * {@code TaskExecutorConfigurations$TaskExecutorConfiguration} guards its
+ * {@code applicationTaskExecutor} bean with {@code @ConditionalOnMissingBean(Executor.class)}.
+ * {@code @ConditionalOnMissingBean} resolves a bean's type from the factory method's
+ * declared return type, before instantiation, so declaring these beans as
+ * {@code ThreadPoolTaskScheduler} would suppress {@code applicationTaskExecutor} exactly the
+ * way a lone {@code TaskScheduler} suppresses {@code taskScheduler}. This application uses
+ * {@code @EnableAsync} ({@code CrawlUtilsController}, {@code EDANFieldMappingUtilController}),
+ * and with no {@code applicationTaskExecutor} (and so no {@code taskExecutor} alias)
+ * {@code AsyncExecutionAspectSupport} falls back to a {@code SimpleAsyncTaskExecutor} - a new
+ * unbounded thread per {@code @Async} call. Declaring {@link TaskScheduler} keeps these beans
+ * invisible to the {@code Executor} condition while still satisfying the {@code TaskScheduler}
+ * one.
+ * <p>
+ * <b>Hand-rolling the {@code taskScheduler} bean bypasses Boot's own scheduler
+ * configuration.</b> {@code spring.task.scheduling.thread-name-prefix}, the
+ * {@code spring.task.scheduling.shutdown.*} properties, any
+ * {@code ThreadPoolTaskSchedulerCustomizer} beans and Boot's virtual-threads scheduler
+ * variant have no effect on it; only {@code spring.task.scheduling.pool.size} is honoured,
+ * and only because it is read explicitly below. None of those are set in this repository;
+ * anyone setting one will have to wire it here by hand.
  */
 @Configuration
 public class ScheduledBackupExecutorConfig {
@@ -44,7 +69,7 @@ public class ScheduledBackupExecutorConfig {
     private static final String DEFAULT_POOL_SIZE = "4";
 
     @Bean(name = "backupTaskScheduler")
-    public ThreadPoolTaskScheduler backupTaskScheduler() {
+    public TaskScheduler backupTaskScheduler() {
         ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
         scheduler.setPoolSize(1);
         scheduler.setThreadNamePrefix("backup-job-");
@@ -61,7 +86,7 @@ public class ScheduledBackupExecutorConfig {
      * by-type lookup ambiguous.
      */
     @Bean(name = "taskScheduler")
-    public ThreadPoolTaskScheduler taskScheduler(
+    public TaskScheduler taskScheduler(
             @Value("${spring.task.scheduling.pool.size:" + DEFAULT_POOL_SIZE + "}") int poolSize) {
         ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
         scheduler.setPoolSize(poolSize);
