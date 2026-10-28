@@ -115,8 +115,24 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
 
         if (collectionBackupDirPath.exists()) {
 
-            return Stream.of(collectionBackupDirPath.listFiles())
-                    .filter(file -> !file.isDirectory())
+            File[] files = collectionBackupDirPath.listFiles();
+            if (files == null) {
+                return new ArrayList<>();
+            }
+
+            // Only this collection's own backup files, by the one shared naming definition
+            // (BackupRestoreService#backupFilePattern) that retention also uses. Anything
+            // else in this directory - a staging ".part" file left by a hard-killed write, a
+            // file named for another collection, a hand-copied note - is not offered as a
+            // restorable backup. Non-empty, too: a zero-length file is a failed write, and
+            // restoring from it can only fail.
+            java.util.regex.Pattern backupFile =
+                    BackupRestoreService.backupFilePattern(crawlBaseDir.getName());
+
+            return Stream.of(files)
+                    .filter(File::isFile)
+                    .filter(file -> backupFile.matcher(file.getName()).matches())
+                    .filter(file -> file.length() > 0L)
                     .map(file -> {
                         Map<String, String> row = new HashMap<>();
                         row.put("file", file.getName());
@@ -209,9 +225,140 @@ public class BackupRestoreServiceImpl implements BackupRestoreService {
     private void saveLocalBackup(String collectionDir, JSONObject json) throws IOException {
         Path crawlBaseDir = new Path(crawlDir.getAbsolutePath(), collectionDir);
         Path collectionBackupDir = new Path(crawlBaseDir, "backup");
-        String filename = crawlBaseDir.getName()+ "_backup_" + new SimpleDateFormat("yyyy-MM-dd'T'HH-mm-ss").format(new Date()) + ".json";
-        Files.createDirectories(Paths.get(collectionBackupDir.toString()));
-        Files.write(Paths.get(collectionBackupDir.toString(), filename), json.toString(4).getBytes(StandardCharsets.UTF_8));
+        // The name is built by BackupRestoreService#backupFileName, the single source of
+        // truth that BackupRetentionPolicy's per-collection pattern is matched against.
+        String filename = BackupRestoreService.backupFileName(crawlBaseDir.getName(), new Date());
+
+        // Defense in depth. collectionDir is built from the collection name, which bean
+        // validation on Collection#name now keeps free of "/", "\" and "..". That validation
+        // can still be bypassed - a direct DB edit, a data migration, or any write path that
+        // skips Hibernate's BeanValidationEventListener - so refuse to write outside crawlDir
+        // here as well, using CANONICAL paths so that ".." segments and symlinks are resolved
+        // before the comparison rather than compared literally.
+        assertInsideCrawlDir(new File(collectionBackupDir.toString(), filename));
+
+        java.nio.file.Path backupDirPath = Paths.get(collectionBackupDir.toString());
+        Files.createDirectories(backupDirPath);
+        writeAtomically(backupDirPath, filename, json.toString(4).getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Writes {@code content} to {@code dir/filename} atomically: fully into a staging file
+     * first, then a single rename into place.
+     * <p>
+     * A plain {@code Files.write} straight onto the final path is not atomic on NFS. A crash,
+     * a lost mount, or ENOSPC part-way through leaves a truncated
+     * {@code *_backup_<ts>.json} on disk, and that is materially dangerous rather than merely
+     * untidy: retention ranks backups by the timestamp in the filename (deliberately - mtime
+     * on a shared NFS mount skews in the destructive direction), so a partial file written
+     * "now" sorts as the newest, occupies a keep-newest floor slot, and pushes the last
+     * genuinely-good backup into the deletable set. The rename makes the final name appear
+     * only once the bytes are all there.
+     * <p>
+     * The staging file is a SIBLING of its destination, {@code <filename>.part}, in the
+     * backup directory itself. Being in the same directory is what makes it certainly on the
+     * same filesystem, and that is what makes {@code ATOMIC_MOVE} work - so the move is
+     * unconditional and there is no non-atomic fallback to degrade into a copy (which would
+     * put a partial file under the final name, the exact failure this method exists to
+     * prevent). It is safe to leave in plain sight because both readers of a backup
+     * directory now filter by {@link BackupRestoreService#backupFilePattern}, which a
+     * {@code .part} name does not match: retention will not prune it and
+     * {@link #collectionListBackupsAvailable} will not offer it for restore. A {@code .part}
+     * left behind by a hard kill is therefore inert and visible, rather than hidden in a
+     * dot-directory where nothing could ever see or clean it up.
+     * <p>
+     * No stale-{@code .part} cleanup is attempted here. The only {@code .part} this call
+     * could collide with is one for the very same target filename, i.e. written in the same
+     * second for the same collection - far more likely to be a concurrent writer than
+     * abandoned garbage - so deleting it blind would destroy a live write. The collision is
+     * handled by {@code CREATE_NEW} below instead: the second writer fails loudly rather
+     * than interleaving its bytes with the first writer's.
+     * <p>
+     * {@code <filename>.part} adds 5 bytes to a name that is already {@code <collection
+     * dir>_backup_<19 chars>.json}; with {@code Collection#name} capped at 200 characters
+     * the staged name stays inside the usual 255-byte component limit for ASCII names.
+     */
+    private void writeAtomically(java.nio.file.Path dir, String filename, byte[] content) throws IOException {
+        java.nio.file.Path target = dir.resolve(filename);
+        java.nio.file.Path staged = dir.resolve(filename + BackupRestoreService.STAGED_FILE_SUFFIX);
+
+        // CREATE_NEW, not the default CREATE+TRUNCATE_EXISTING: the staged name is derived
+        // from the target name, so two writers racing on the same target would otherwise
+        // write into one file and the winner would rename a mixture of both into place.
+        Files.write(staged, content, java.nio.file.StandardOpenOption.CREATE_NEW,
+                java.nio.file.StandardOpenOption.WRITE);
+        boolean moved = false;
+        try {
+            setBackupFileMode(staged);
+            // Same directory, so same filesystem: ATOMIC_MOVE cannot be refused as
+            // cross-device here, and an AtomicMoveNotSupportedException from a provider that
+            // does not implement it at all is a genuine failure of this write, not something
+            // to paper over with a copy.
+            Files.move(staged, target, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            moved = true;
+        } finally {
+            if (!moved) {
+                // The move never happened, so the staged bytes are garbage. Deleting them
+                // here is what keeps a failed write from leaving anything behind at all.
+                try {
+                    Files.deleteIfExists(staged);
+                } catch (IOException cleanupFailure) {
+                    log.warn("Failed to clean up staged backup file {}: {}", staged, cleanupFailure.toString());
+                }
+            }
+        }
+    }
+
+    /**
+     * Permissions of a written backup: {@code rw-r--r--}.
+     * <p>
+     * Set explicitly rather than left to the umask because the staged file is created by
+     * this code and then renamed, and the rename carries whatever mode the staged file had.
+     * Pinned at 0644 so a backup stays readable by an operator or a copy job running as
+     * another account, which is what a plain {@code Files.write} under the usual umask
+     * produced before the write was staged.
+     */
+    private static final java.util.Set<java.nio.file.attribute.PosixFilePermission> BACKUP_FILE_MODE =
+            java.nio.file.attribute.PosixFilePermissions.fromString("rw-r--r--");
+
+    /**
+     * Applies {@link #BACKUP_FILE_MODE} where the filesystem has POSIX permissions at all.
+     * Guarded rather than assumed: the view is absent on a non-POSIX filesystem (Windows, and
+     * some network mounts), where there is simply nothing to set and the write must still
+     * succeed.
+     */
+    private void setBackupFileMode(java.nio.file.Path staged) {
+        java.nio.file.attribute.PosixFileAttributeView posix = Files.getFileAttributeView(
+                staged, java.nio.file.attribute.PosixFileAttributeView.class);
+        if (posix == null) {
+            return;
+        }
+        try {
+            posix.setPermissions(BACKUP_FILE_MODE);
+        } catch (IOException | UnsupportedOperationException e) {
+            log.warn("Could not set permissions on backup file {}: {}", staged, e.toString());
+        }
+    }
+
+    /**
+     * Refuses any backup target that does not resolve to a location underneath {@code crawlDir}.
+     * Intentionally scoped to {@code saveLocalBackup} only: {@code localBackup(...)} and
+     * {@code getBackupFile(...)} have their own pre-existing traversal concerns that are tracked
+     * separately as TODO(#19) - they pass an unvalidated {@code {filename}} path variable straight
+     * through and should reuse this method.
+     *
+     * @param target the file about to be written
+     * @throws IOException if the canonical target is not contained in the canonical {@code crawlDir}
+     */
+    void assertInsideCrawlDir(File target) throws IOException {
+        File base = crawlDir.getCanonicalFile();
+        File canonicalTarget = target.getCanonicalFile();
+        // The trailing File.separator is load-bearing: without it a sibling directory whose name
+        // merely starts with the base name - "/data/crawlsevil" against a base of "/data/crawls" -
+        // would satisfy a naive startsWith check and slip through.
+        if (!canonicalTarget.getPath().startsWith(base.getPath() + File.separator)) {
+            throw new IOException("refusing to write a backup outside crawlDir: " + canonicalTarget.getPath());
+        }
     }
 
     @Override

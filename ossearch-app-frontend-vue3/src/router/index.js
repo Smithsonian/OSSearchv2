@@ -241,6 +241,7 @@ const routes = [
         path: 'backupRestore',
         name: 'backupRestoreCollection',
         component: BackupRestoreCollection,
+        beforeEnter: isAdmin,
         props: true
       },
       {
@@ -357,6 +358,7 @@ const routes = [
     path: '/backupRestore',
     name: 'backupRestore',
     component: BackupRestore,
+    beforeEnter: isAdmin,
     props: true
   },
   {

@@ -44,8 +44,11 @@ public class SchedulerHeartbeatService {
 
     @PostConstruct
     void createTableIfMissing() {
-        // CREATE TABLE IF NOT EXISTS instead of a JPA entity so behavior does
-        // not depend on the hibernate ddl-auto setting of the environment.
+        // Raw CREATE TABLE IF NOT EXISTS rather than a JPA entity simply because this
+        // service predates the JPA-entity approach used by the backup job's lease and
+        // run-status tables and has not been converted yet. It is not a design choice to
+        // preserve: every environment runs ddl-auto: update, so an entity would be
+        // created the same way the other tables are.
         jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS scheduler_heartbeat (" +
                 "hostname VARCHAR(255) NOT NULL PRIMARY KEY, " +
                 "last_heartbeat TIMESTAMP(3) NOT NULL)");
