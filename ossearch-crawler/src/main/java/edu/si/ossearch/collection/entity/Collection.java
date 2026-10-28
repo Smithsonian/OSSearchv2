@@ -50,13 +50,25 @@ public class Collection {
      * or nested a level deeper than {@code BackupRetentionPolicy} sweeps, so they are never
      * pruned).
      * <p>
+     * On top of the plain filesystem hazards, that path is built with
+     * {@code org.apache.hadoop.fs.Path}, which parses its string argument as a URI. Probing
+     * Hadoop's {@code Path} over every printable ASCII character turned up exactly one offender
+     * beyond the separators already denied below: the <b>colon</b>.
+     * {@code new Path("<crawlDir>", "a:b_12")} throws
+     * {@code IllegalArgumentException: URISyntaxException: Relative path in absolute URI}, so a
+     * collection named {@code a:b} makes the nightly backup throw on every run forever; the
+     * quieter variant {@code a:/b} does not throw at all - Hadoop reads {@code a} as a URI
+     * scheme and the result leaves {@code crawlDir} altogether. Space, {@code &}, {@code ?},
+     * {@code #}, {@code %}, quotes, brackets and non-ASCII letters were all probed and are all
+     * handled correctly, so none of them is denied here.
+     * <p>
      * The constraints below are therefore a <b>denylist of path-hostile input only</b>, not an
      * allowlist of "tidy" names. Bean validation on an entity fires on pre-update as well as
      * pre-insert, so anything rejected here would permanently block operators from editing an
      * existing collection whose name predates the rule (and would break restoring an older
      * backup). Spaces, dots, ampersands and non-ASCII letters are merely ugly in a path and are
-     * deliberately allowed; slashes, control characters and {@code ..} are the actual
-     * vulnerability. Do not tighten this into something like {@code ^[A-Za-z0-9_-]+$}.
+     * deliberately allowed; slashes, colons, control characters and {@code ..} are the
+     * actual vulnerability. Do not tighten this into something like {@code ^[A-Za-z0-9_-]+$}.
      */
     @NotBlank(message = "A collection name is required and cannot be blank.")
     // Filesystem constraint, not a display one: the on-disk directory is "<name>_<id>" and most
@@ -80,12 +92,14 @@ public class Collection {
     //   (?!\s)            - no leading whitespace
     //   (?!\.{1,2}$)      - the name is not "." or "..", which would resolve to the parent or
     //                       current directory instead of a new one
-    //   [^\p{Cntrl}/\\]+  - one or more characters that are neither control characters
+    //   [^\p{Cntrl}/\\:]+ - one or more characters that are none of: a control character
     //                       (\p{Cntrl} is [\x00-\x1F\x7F], covering NUL, \n and \r, which
-    //                       produce unmatchable filenames) nor a "/" or "\" path separator
+    //                       produce unmatchable filenames), a "/" or "\" path separator, or a
+    //                       ":" (org.apache.hadoop.fs.Path parses the name as a URI, so a
+    //                       colon either throws or is taken as a URI scheme - see above)
     //   (?<!\s)$          - no trailing whitespace
-    @Pattern(regexp = "^(?!\\s)(?!\\.{1,2}$)[^\\p{Cntrl}/\\\\]+(?<!\\s)$",
-            message = "A collection name cannot contain slashes or control characters, cannot be \".\" or \"..\", and cannot start or end with whitespace, because it is used as a directory name on disk.")
+    @Pattern(regexp = "^(?!\\s)(?!\\.{1,2}$)[^\\p{Cntrl}/\\\\:]+(?<!\\s)$",
+            message = "A collection name cannot contain slashes, colons or control characters, cannot be \".\" or \"..\", and cannot start or end with whitespace, because it is used as a directory name on disk.")
     private String name;
 
     @Column(columnDefinition = "TEXT")

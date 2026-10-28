@@ -35,3 +35,8 @@ build/
 
 **/**/*.private.env.json
 /.jpb/
+
+### Local AI assistant instructions ###
+# Untracked by choice - the authoritative build/test instructions live in the
+# README. Ignored so a personal CLAUDE.md does not sit in everyone's git status.
+CLAUDE.md

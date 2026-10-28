@@ -24,6 +24,19 @@ import org.springframework.validation.Validator;
  * constraints instead produce a {@code 400 Bad Request} carrying per-field messages, which is
  * what the UI can actually show the user.
  * <p>
+ * <b>Blast radius, considered and accepted.</b> The validator applies to every entity exposed
+ * through Data REST, but of them only {@code Collection} and {@code User} carry constraints at
+ * all. {@code User}'s column widths were themselves derived from its own {@code @Size} under
+ * {@code ddl-auto: update}, so no stored row can violate them; Hibernate's pre-update bean
+ * validation already fires today, so this change converts a 500 into a 400 rather than newly
+ * rejecting anything; and role changes travel through the association endpoints, which emit
+ * {@code BeforeLinkSaveEvent} rather than the {@code BeforeSaveEvent} registered here. The one
+ * residual: a legacy {@code user} row that violates one of the two @NotBlank declarations -
+ * a blank {@code username}, or an {@code email} that is blank or not RFC-shaped - would now
+ * fail a scalar PATCH with a 400 instead of succeeding. That is judged the better failure - the
+ * row is already invalid by the entity's own declaration - but it is a behaviour change, not an
+ * absence of one.
+ * <p>
  * The injected validator is the Boot-autoconfigured {@code LocalValidatorFactoryBean}, pulled
  * in by the {@code defaultValidator} qualifier. Declaring a new {@code LocalValidatorFactoryBean}
  * bean here instead is the classic mistake: it would be picked up as <i>the</i> MVC validator

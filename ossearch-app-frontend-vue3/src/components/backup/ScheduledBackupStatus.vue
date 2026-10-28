@@ -32,8 +32,16 @@
           </div>
 
 
-          <div v-if="!status.lastRun" class="text-muted">
-            No scheduled backup has run yet.
+          <!--
+            Only the genuinely-empty case gets the calm reading. A failed status lookup also
+            arrives as lastRun: null, but the backend now sets "error" for that case
+            (BackUpRestoreController uses BackupJobStatusService#lookupLastRun(), which
+            reports the failure separately from the row), and that renders as the alert
+            above - so suppressing this line on status.error keeps the two states from
+            looking alike.
+          -->
+          <div v-if="!status.lastRun && !status.error" class="text-muted">
+            No scheduled backup run is on record.
           </div>
 
           <div v-else>
@@ -60,10 +68,21 @@
 
               <dt class="col-sm-3">Collections</dt>
               <dd class="col-sm-9">
-                {{ status.lastRun.collectionsSucceeded }} / {{ status.lastRun.collectionsTotal }} succeeded
-                <span v-if="status.lastRun.collectionsFailed > 0" class="text-danger">
-                  ({{ status.lastRun.collectionsFailed }} failed)
-                </span>
+                <!--
+                  The per-collection counters are only written by recordFinished. A run that
+                  is still RUNNING, was reconciled to STALE, FAILED outright, or hit either
+                  recordAborted overload leaves those columns NULL, which arrives here as
+                  undefined - rendering them unconditionally produced a bare " / succeeded"
+                  for five of the reported statuses. An em dash says "not recorded" instead
+                  of implying zero.
+                -->
+                <template v-if="hasCollectionCounts">
+                  {{ status.lastRun.collectionsSucceeded }} / {{ status.lastRun.collectionsTotal }} succeeded
+                  <span v-if="status.lastRun.collectionsFailed > 0" class="text-danger">
+                    ({{ status.lastRun.collectionsFailed }} failed)
+                  </span>
+                </template>
+                <span v-else class="text-muted">&mdash;</span>
               </dd>
 
               <!--
@@ -122,8 +141,17 @@
           </dl>
 
           <div v-if="status.retention" class="mt-3 pt-3 border-top text-muted small">
+            <!--
+              The keep-newest floor is reported alongside the age window because the age
+              window alone reads as unconditional: without the count, "older than 90 days
+              are deleted" suggests a collection that stopped being backed up loses
+              everything, which is exactly what the floor prevents.
+            -->
             <div v-if="status.retention.days">
-              Backups older than {{ status.retention.days }} days are deleted.
+              Backups older than {{ status.retention.days }} days are deleted<template
+                v-if="status.retention.count"
+              >, except the {{ status.retention.count }} newest of each collection, which are
+                always kept</template>.
             </div>
             <div v-if="status.retention.error" class="text-warning">
               Retention preview unavailable: {{ status.retention.error }}
@@ -172,6 +200,14 @@ export default {
         ? this.status.retention.candidateCount
         : null;
       return typeof count === "number" ? count : null;
+    },
+    // recordFinished is the only writer of the three collection counters, so they are NULL
+    // (undefined here) for RUNNING, STALE, FAILED and both aborted statuses. Total is the
+    // one checked because succeeded can legitimately be 0 on a run that did record counts.
+    hasCollectionCounts() {
+      return !!this.status
+        && !!this.status.lastRun
+        && typeof this.status.lastRun.collectionsTotal === "number";
     },
   },
   mounted() {

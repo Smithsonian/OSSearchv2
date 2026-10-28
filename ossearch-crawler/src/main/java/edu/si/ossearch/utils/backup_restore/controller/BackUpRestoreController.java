@@ -127,7 +127,16 @@ public class BackUpRestoreController {
             status.put("nextRun", nextRun);
             status.put("nextRunNote", nextRunNote);
 
-            status.put("lastRun", backupJobStatusService.getLastRun().orElse(null));
+            // lookupLastRun() rather than getLastRun(): the latter collapses "the table is
+            // empty" and "the query failed" into the same empty Optional, and those two need
+            // opposite responses from an operator. The lookup carries the outcome back with
+            // the row, so the failure is reported as an error here instead of rendering in
+            // the UI as a calm "nothing has run yet".
+            BackupJobStatusService.LastRunLookup lastRunLookup = backupJobStatusService.lookupLastRun();
+            status.put("lastRun", lastRunLookup.lastRun());
+            if (lastRunLookup.failed()) {
+                status.put("error", "could not read the last scheduled backup run: " + lastRunLookup.error());
+            }
             status.put("retention", retentionStatus(includeRetentionPreview));
         } catch (Exception e) {
             log.error("Problem getting scheduled backup status!", e);
@@ -148,15 +157,21 @@ public class BackUpRestoreController {
      * {@code preview()} walks the whole crawlDir on every call - one NFS metadata round trip
      * per collection, uncached. It is therefore only performed when the caller explicitly asks
      * for it via {@code includePreview}; otherwise this returns just the configured retention
-     * window, which is a plain config read. When the preview is skipped the candidate keys are
-     * omitted entirely rather than sent as zeros, so the UI can tell "not asked for" apart
-     * from "nothing to prune".
+     * window ({@code days}) and keep-newest floor ({@code count}), both of which are plain
+     * config reads. When the preview is skipped the candidate keys are omitted entirely
+     * rather than sent as zeros, so the UI can tell "not asked for" apart from "nothing to
+     * prune".
      * <p>
      * Never throws: a retention preview problem must not fail the status endpoint.
      */
     private Map<String, Object> retentionStatus(boolean includePreview) {
         Map<String, Object> retention = new LinkedHashMap<>();
         retention.put("days", scheduledBackupConfig.getRetention().getDays());
+        // The keep-newest floor belongs beside the age window, not behind the preview flag:
+        // "older than N days are deleted" on its own reads as unconditional, and the count is
+        // the only thing standing between a long-idle collection and losing its whole backup
+        // history. Both are plain config reads, so neither costs an NFS round trip.
+        retention.put("count", scheduledBackupConfig.getRetention().getCount());
 
         if (!includePreview) {
             return retention;

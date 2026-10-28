@@ -99,7 +99,14 @@ class CollectionNameValidationTest {
             "日本館",                             // non-ASCII, non-latin
             "...",                              // three dots is a legal directory name
             "a",                                // single character
-            "with-dash_and_underscore"
+            "with-dash_and_underscore",
+            // Probed against org.apache.hadoop.fs.Path and handled correctly, so the colon
+            // rule must not be widened into a general punctuation denylist.
+            "report?draft",
+            "issue#42",
+            "100% coverage",
+            "collection (old)",
+            "a,b;c=d"
     })
     void acceptsUglyButHarmlessNames(String name) {
         Set<ConstraintViolation<Collection>> violations = validateName(name);
@@ -130,6 +137,32 @@ class CollectionNameValidationTest {
     @DisplayName("rejects a backslash")
     void rejectsBackslash() {
         assertThat(validateName("a\\b")).isNotEmpty();
+    }
+
+    /**
+     * The colon is not a filesystem hazard on Linux - it is a Hadoop one. The backup path is
+     * built with {@code org.apache.hadoop.fs.Path}, which parses its argument as a URI, and a
+     * colon is a URI scheme separator. Probing every printable ASCII character against
+     * {@code new Path("/data/crawlDir", name + "_12")} found the colon to be the only offender
+     * besides the separators already denied: {@code a:b} throws
+     * {@code IllegalArgumentException: URISyntaxException: Relative path in absolute URI}
+     * (so the nightly backup fails forever for that collection), and {@code a:/b} does not
+     * throw but silently resolves outside {@code crawlDir} with {@code a} read as a scheme.
+     */
+    @DisplayName("rejects a colon anywhere, which breaks org.apache.hadoop.fs.Path's URI parse")
+    @ParameterizedTest(name = "\"{0}\" is rejected")
+    @ValueSource(strings = {
+            "a:b",          // throws: Relative path in absolute URI
+            ":leading",     // throws
+            "trailing:",    // throws
+            "a:b:c",        // throws
+            "a:/b",         // does NOT throw - resolves outside crawlDir with "a" as the scheme
+            "http://x"      // same, with an authority
+    })
+    void rejectsColon(String name) {
+        Set<ConstraintViolation<Collection>> violations = validateName(name);
+        assertThat(violations).isNotEmpty();
+        assertThat(violationMessages(violations)).contains("colons");
     }
 
     @Test
