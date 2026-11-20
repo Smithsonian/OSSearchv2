@@ -1,4 +1,4 @@
-# OSSearch Solr 9.4.0 Install and Configuration
+# OSSearch Solr 9.11.0 Install and Configuration
 
 # Install Java 1.8 and latest
 ```bash
@@ -46,26 +46,26 @@ chown -R solr:solr /data/ossearch-data-share/solr-data
 
 
 # Run the Solr Installation Script
-> Download [Solr 9.4.0](https://www.apache.org/dyn/closer.lua/solr/solr/9.4.0/solr-9.4.0.tgz?action=download)
+> Download [Solr 9.11.0](https://www.apache.org/dyn/closer.lua/solr/solr/9.11.0/solr-9.11.0.tgz?action=download)
 
 ```bash
 cd /opt
 
 # download solr
-wget https://archive.apache.org/dist/solr/solr/9.4.0/solr-9.4.0.tgz
+wget https://archive.apache.org/dist/solr/solr/9.11.0/solr-9.11.0.tgz
 
 # extract the install_solr_service.sh script from the archive into the current directory
-tar xzf solr-9.4.0.tgz solr-9.4.0/bin/install_solr_service.sh --strip-components=2
+tar xzf solr-9.11.0.tgz solr-9.11.0/bin/install_solr_service.sh --strip-components=2
 
 # By default, the install_solr_service.sh script extracts the distribution archive into /opt,
 # configures Solr to write files into /var/solr, and runs Solr as the solr user.
-# ex. sudo bash ./install_solr_service.sh solr-9.4.0.tgz -d /data/solr -u solrweb
+# ex. sudo bash ./install_solr_service.sh solr-9.11.0.tgz -d /data/solr -u solrweb
 
 # on solr prod leader (si-prodsolr01)
-sudo bash ./install_solr_service.sh solr-9.4.0.tgz -d /data/ossearch-data-share/solr-data/prod/leader
+sudo bash ./install_solr_service.sh solr-9.11.0.tgz -d /data/ossearch-data-share/solr-data/prod/leader
 
 # on solr prod follower (si-prodsolr02)
-sudo bash ./install_solr_service.sh solr-9.4.0.tgz -d /data/ossearch-data-share/solr-data/prod/follower
+sudo bash ./install_solr_service.sh solr-9.11.0.tgz -d /data/ossearch-data-share/solr-data/prod/follower
 ```
 
 # Edit `/etc/default/solr.in.sh` and set the following properties
@@ -150,4 +150,4 @@ sudo systemctl restart solr
 
 
 # Solr Documentation 
-https://solr.apache.org/guide/solr/9_4/deployment-guide/taking-solr-to-production.html
+https://solr.apache.org/guide/solr/9_11/deployment-guide/taking-solr-to-production.html

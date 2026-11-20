@@ -74,15 +74,12 @@
        startup parameter to define the modules to load globally.  For more info
        see https://solr.apache.org/guide/solr/latest/configuration-guide/solr-modules.html.
     -->
-  <lib dir="${solr.install.dir:../../../..}/modules/extraction/lib" regex=".*\.jar" />
-
-  <lib dir="${solr.install.dir:../../../..}/modules/clustering/lib/" regex=".*\.jar" />
-
-  <lib dir="${solr.install.dir:../../../..}/modules/langid/lib/" regex=".*\.jar" />
-
-  <lib dir="${solr.install.dir:../../../..}/modules/ltr/lib/" regex=".*\.jar" />
-
-  <lib dir="${solr.install.dir:../../../..}/modules/scripting/lib/" regex=".*\.jar" />
+  <!-- No Solr modules are loaded by this config. The extraction module was
+       removed because it carries CVE-2025-66516 (XXE via XFA content in PDFs),
+       and nothing here used the clustering, langid, ltr or scripting modules.
+       If a module is ever needed, enable it with the SOLR_MODULES environment
+       variable (e.g. SOLR_MODULES=langid) instead of a <lib> line.
+    -->
 
   <!-- an exact 'path' can be used instead of a 'dir' to specify a
        specific jar file.  This will cause a serious error to be logged
